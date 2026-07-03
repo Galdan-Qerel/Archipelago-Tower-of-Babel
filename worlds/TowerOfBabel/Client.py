@@ -6,8 +6,9 @@ import unicodedata
 import ModuleUpdate
 ModuleUpdate.update()
 
+import Utils
 from CommonClient import CommonContext, server_loop, gui_enabled, ClientCommandProcessor, get_base_parser
-from .Game import game_name  # <-- Import your exact internal game name
+from .Game import game_name
 
 class BabelCommandProcessor(ClientCommandProcessor):
     def _cmd_unlocked(self):
@@ -19,58 +20,69 @@ class BabelCommandProcessor(ClientCommandProcessor):
 
 class BabelContext(CommonContext):
     command_processor = BabelCommandProcessor
-    game = game_name  # <-- Use the imported variable instead of a hardcoded string
-    items_handling = 0b111 # Receive all items from the server
+    game = game_name  
+    items_handling = 0b111 
     tags = {"AP"}
-    
 
     def __init__(self, server_address, password):
         super().__init__(server_address, password)
         self.unlocked_chars = set()
 
+    async def server_auth(self, password_requested: bool = False):
+        if password_requested and not self.password:
+            await super().server_auth(password_requested)
+        await self.get_username()
+        await self.send_connect()
+
+    def make_gui(self):
+        ui = super().make_gui()
+        class BabelManager(ui):
+            base_title = "Tower of Babel Client"
+        return BabelManager
+
     def normalize_char(self, char: str) -> str:
         normalized = unicodedata.normalize('NFD', char)
         return "".join([c for c in normalized if not unicodedata.combining(c)]).upper()
-        
-    def make_gui(self):
-        # Grab the default Archipelago UI framework
-        ui = super().make_gui()
-        
-        # Create a tiny custom wrapper just to change the window title
-        class BabelManager(ui):
-            base_title = "Tower of Babel Client"
-            
-        return BabelManager
-        
-    def scramble_text(self, text: str) -> str:
-        result = []
+
+    def scramble_text_to_nodes(self, text: str) -> list:
+        """Converts a string into a list of native Archipelago PrintJSON nodes."""
+        nodes = []
         for char in text:
             if char.isspace() or self.normalize_char(char) in self.unlocked_chars:
-                # Unlocked: Magenta Kivy Markup
-                result.append(f"[color=#FF00FF]{char}[/color]")
+                # Unlocked: Magenta (Explicitly tell AP it is a color node)
+                nodes.append({"type": "color", "color": "magenta", "text": char})
             else:
-                # Scrambled: Teal Kivy Markup
+                # Scrambled: Cyan
                 scrambled_char = random.choice(string.ascii_letters + string.digits + string.punctuation)
-                result.append(f"[color=#00FFFF]{scrambled_char}[/color]")
-        return "".join(result)
+                nodes.append({"type": "color", "color": "cyan", "text": scrambled_char})
+        return nodes
 
     def on_print_json(self, args: dict):
-        """Intercepts incoming server messages to apply the Babel scrambling."""
+        """Intercepts the raw JSON packet and injects color nodes before rendering."""
         if args.get("type") == "Chat":
             parts = args.get("data", [])
             full_text = "".join([str(p.get("text", "")) for p in parts])
-            name, _, msg = full_text.partition(": ")
             
-            if msg:
-                self.output(f"[Chat] {name}: {self.scramble_text(msg)}")
+            # Separate the "Player: " prefix from the actual message
+            name_part, sep, msg_part = full_text.partition(": ")
+            
+            new_data = []
+            if msg_part:
+                # Keep the Player Name in the default white color
+                new_data.append({"text": name_part + sep})
+                # Add the scrambled, colorized nodes for the message
+                new_data.extend(self.scramble_text_to_nodes(msg_part))
             else:
-                self.output(f"[Chat] {self.scramble_text(name)}")
-        else:
-            # Let Archipelago handle system messages normally
-            super().on_print_json(args)
+                # If there's no colon (system chat), scramble everything
+                new_data.extend(self.scramble_text_to_nodes(full_text))
+                
+            # Overwrite the original packet's data with our vibrant new nodes!
+            args["data"] = new_data
+            
+        # Hand the mutated packet over to Archipelago to render cleanly
+        super().on_print_json(args)
 
     def on_package(self, cmd: str, args: dict):
-        """Fires whenever the client receives a network package."""
         super().on_package(cmd, args)
         if cmd in {"Connected", "ReceivedItems"}:
             self.update_unlocked_chars()
@@ -83,13 +95,12 @@ class BabelContext(CommonContext):
                 char_part = item_name.split(" ", 1)[-1] if " " in item_name else item_name
                 self.unlocked_chars.add(self.normalize_char(char_part))
 
+
 def launch(*args):
-    """The APQuest-style native launcher function."""
     async def main(parsed_args):
         ctx = BabelContext(parsed_args.connect, parsed_args.password)
         ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
         
-        # This triggers Archipelago's native Kivy Text GUI
         if gui_enabled:
             ctx.run_gui()
         ctx.run_cli()
@@ -101,5 +112,8 @@ def launch(*args):
     parser = get_base_parser(description="Tower of Babel Client")
     parsed_args, _ = parser.parse_known_args(args)
     colorama.init()
+    
+    Utils.init_logging("Tower of Babel Client", exception_logger="Client")
+    
     asyncio.run(main(parsed_args))
     colorama.deinit()
