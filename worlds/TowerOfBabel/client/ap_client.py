@@ -1,4 +1,6 @@
 import asyncio, json, websockets, uuid, random, string, unicodedata, os
+import traceback
+
 # ANSI Escape Codes
 TEAL = "\033[36m"
 MAGENTA = "\033[35m"
@@ -129,13 +131,27 @@ class APClient:
                 print(f"[{self.name}] Connection error: {e}. Retrying...")
                 await asyncio.sleep(5)
 
+import argparse
+
 async def main():
-    await asyncio.sleep(1)
-    URL = "wss://archipelago.gg:55291"
-    babel = APClient("Manual_TowerofBa", "Manual_TowerofBabel_Galdan", URL, silent=True)
-    main_client = APClient("GaldanFF10", "Final Fantasy X", URL, babel_client=babel)
+    parser = argparse.ArgumentParser(description="Tower of Babel Client")
+    parser.add_argument("--url", default="wss://archipelago.gg:55291", help="Archipelago server URL")
+    parser.add_argument("--name", required=True, help="Your slot name")
+    parser.add_argument("--password", default="", help="Room password")
+    args = parser.parse_args()
+
+    # If you need a second client (like your FF10 setup), 
+    # you can initialize it using the args provided or keep it hardcoded if it's a permanent secondary
+    babel = APClient(args.name, "Tower of Babel", args.url, args.password)
     
-    await asyncio.gather(babel.run(), main_client.run(), main_client.listen_for_input())
+    # Run the client
+    await babel.run()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception:
+        # ... (your existing crash handler)
+        print("\n--- CRASH DETECTED ---")
+        traceback.print_exc()
+        input("\nPress Enter to close this window...")

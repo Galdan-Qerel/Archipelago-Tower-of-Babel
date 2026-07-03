@@ -1,8 +1,14 @@
-import sys
 import os
+import sys
 
-# Path injection for core modules
-archipelago_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+# Get the directory where ap_client.py is located
+client_dir = os.path.dirname(os.path.abspath(__file__))
+# Get the world root (TowerOfBabel/)
+world_root = os.path.dirname(os.path.dirname(client_dir))
+# Get the Archipelago root (where 'worlds/' resides)
+archipelago_root = os.path.dirname(os.path.dirname(world_root))
+
+# Add the Archipelago root to sys.path so 'import Utils' works everywhere
 if archipelago_root not in sys.path:
     sys.path.insert(0, archipelago_root)
 
@@ -39,24 +45,42 @@ class ManualWorld(World):
 # Integrated Client Launch Logic
 ###
 
-def launch_tower_of_babel_client():
-    # Launches the client as a clean, independent subprocess
+
+###
+# Integrated Client Launch Logic
+###
+
+###
+# Integrated Client Launch Logic
+###
+
+###
+# Integrated Client Launch Logic
+###
+
+def run_client(*args):
     import sys
-    launch_subprocess([sys.executable, "-m", "worlds.TowerOfBabel.client.ap_client"])
+    import subprocess
+    
+    # If the secret flag is present, we are inside the newly popped terminal window!
+    # It is safe to run the actual client code now.
+    if "--run-now" in args:
+        import asyncio
+        from worlds.TowerOfBabel.client import ap_client
+        try:
+            asyncio.run(ap_client.main())
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            input("\nPress Enter to close this window...")
+            
+    # If the flag is NOT present, we were clicked from the GUI.
+    # Pop a new black terminal window and call this component again with the secret flag.
+    else:
+        cmd = [sys.executable, "TowerOfBabelClient", "--run-now"]
+        if sys.platform == "win32":
+            subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        else:
+            subprocess.Popen(cmd)
 
-class VersionedComponent(Component):
-    def __init__(self, display_name: str, script_name: Optional[str] = None, func: Optional[Callable] = None, version: int = 0, file_identifier: Optional[Callable[[str], bool]] = None, icon: Optional[str] = None):
-        super().__init__(display_name=display_name, script_name=script_name, func=func, component_type=Type.CLIENT, file_identifier=file_identifier, icon=icon)
-        self.version = version
-
-def add_client_to_launcher() -> None:
-    version = 2026_07_02 
-    components.append(VersionedComponent(
-        "Tower of Babel Client", 
-        "TowerOfBabelClient", 
-        func=launch_tower_of_babel_client, 
-        version=version, 
-        icon="manual"
-    ))
-
-add_client_to_launcher()
+components.append(Component("Tower of Babel Client", "TowerOfBabelClient", func=run_client))
