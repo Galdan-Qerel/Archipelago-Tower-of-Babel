@@ -31,7 +31,17 @@ class BabelContext(CommonContext):
     def normalize_char(self, char: str) -> str:
         normalized = unicodedata.normalize('NFD', char)
         return "".join([c for c in normalized if not unicodedata.combining(c)]).upper()
-
+        
+    def make_gui(self):
+        # Grab the default Archipelago UI framework
+        ui = super().make_gui()
+        
+        # Create a tiny custom wrapper just to change the window title
+        class BabelManager(ui):
+            base_title = "Tower of Babel Client"
+            
+        return BabelManager
+        
     def scramble_text(self, text: str) -> str:
         result = []
         for char in text:
