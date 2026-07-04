@@ -1,94 +1,97 @@
-from BaseClasses import Location
-from .Data import location_table, event_table
-from .Game import starting_index, game_name
+from __future__ import annotations
+
+import json
+import pkgutil
+from typing import TYPE_CHECKING, Any
+from BaseClasses import ItemClassification, Location
+from . import items
+
+if TYPE_CHECKING:
+    from .world import TowerOfBabelWorld
+from .Game import game_name
 from typing import Any
 
+if TYPE_CHECKING:
+    from .world import TowerOfBabelWorld
 
-######################
-# Generate location lookups
-######################
+# We use a slightly higher BASE_ID for locations to prevent overlap with your Item IDs
+LOCATION_BASE_ID = 7481000
 
-count = starting_index
-victory_names: list[str] = []
+# Dynamically load the locations.json file from the apworld package
+try:
+    raw_data = pkgutil.get_data(__name__, "data/locations.json")
+    if raw_data is None:
+        raise FileNotFoundError("locations.json could not be found in the package namespace.")
+        
+    # Since the JSON is now a direct array, we remove the ["data"] key extraction
+    location_data: list[dict[str, Any]] = json.loads(raw_data.decode("utf-8"))
+except Exception as e:
+    raise FileNotFoundError(f"Could not load locations.json. Ensure it is in the correct directory. Error: {e}")
 
-# add sequential generated ids to the lists
-for key, _ in enumerate(location_table):
-    if "victory" in location_table[key] and location_table[key]["victory"]:
-        victory_names.append(location_table[key]["name"])
+# Dynamically build LOCATION_NAME_TO_ID by iterating over the JSON array
+LOCATION_NAME_TO_ID = {
+    loc["name"]: LOCATION_BASE_ID + index 
+    for index, loc in enumerate(location_data, start=1)
+}
 
-    if "id" in location_table[key]:
-        item_id = location_table[key]["id"]
-        if item_id >= count:
-            count = item_id
-        else:
-            raise ValueError(f"{location_table[key]['name']} has an invalid ID. ID must be at least {count + 1}")
-
-    location_table[key]["id"] = count
-
-    if "region" not in location_table[key]:
-        location_table[key]["region"] = "Manual" # all locations are in the same region for Manual
-
-    if isinstance(location_table[key].get("category", []), str):
-        location_table[key]["category"] = [location_table[key]["category"]]
-
-    count += 1
-
-if not victory_names:
-    # Add the game completion location, which will have the Victory item assigned to it automatically
-    location_table.append({
-        "id": count + 1,
-        "name": "__Manual Game Complete__",
-        "region": "Manual",
-        "requires": []
-        # "category": custom_victory_location["category"] if "category" in custom_victory_location else []
-    })
-    victory_names.append("__Manual Game Complete__")
-
-location_id_to_name: dict[int, str] = {}
-location_name_to_location: dict[str, dict[str, Any]] = {}
-location_name_groups: dict[str, list[str]] = {}
-event_name_to_event: dict[str, dict[str, Any]] = {}
-
-for loc in location_table:
-    loc_name = loc.get("name", f"Unnamed Location {loc['id']}")
-    location_id_to_name[loc["id"]] = loc_name
-    location_name_to_location[loc_name] = loc
-
-    for c in loc.get("category", []):
-        if c not in location_name_groups:
-            location_name_groups[c] = []
-        location_name_groups[c].append(loc_name)
+class TowerOfBabelLocation(Location):
+    game = "TowerOfBabel"
+    
+def get_location_names_with_ids(location_names: list[str]) -> dict[str, int | None]:
+    return {location_name: LOCATION_NAME_TO_ID[location_name] for location_name in location_names}
 
 
-# location_id_to_name[None] = "__Manual Game Complete__"
-location_name_to_id = {name: id for id, name in location_id_to_name.items()}
+def create_all_locations(world: TowerOfBabelWorld) -> None:
+    create_regular_locations(world)
 
-id = 0
-for key, event in enumerate(event_table):
-    event_name = f"{id}_{event['name']}".upper().replace(" ", "_")
-    while event_name in location_name_to_location:
-        id += 1
-        event_name = f"{id}_{event['name']}".upper().replace(" ", "_")
-    if "location_name" in event:
-        if event["location_name"] in location_name_to_location:
-            raise Exception(f"Cannot define event {event['location_name']} with the same name as a location.")
-        event_name_to_event[event["location_name"]] = event
-    else:
-        event_name_to_event[event_name] = event
-        event_name_to_event[event_name]["location_name"] = event_name
-        event_table[key]["location_name"] = event_name
-    if 'visible' not in event:
-        event_name_to_event[event_name]['visible'] = False
-        event_table[key]['visible'] = False
-    if 'region' not in event:
-        event_name_to_event[event_name]['region'] = "Manual"
-        event_table[key]['region'] = "Manual"
-    id += 1
+def create_letter_locations(world: "TowerOfBabelWorld", overworld) -> None:
+    """Adds all locations categorized as 'Letters' to the Overworld."""
+    for loc in location_data:
+        if "Letters" in loc.get("category", []):
+            overworld.locations.append(TowerOfBabelLocation(
+                world.player, 
+                loc["name"], 
+                world.location_name_to_id[loc["name"]], 
+                overworld
+            ))
 
-######################
-# Location classes
-######################
+def create_number_locations(world: "TowerOfBabelWorld", overworld) -> None:
+    """Adds all locations categorized as 'Numbers' to the Overworld."""
+    for loc in location_data:
+        if "Numbers" in loc.get("category", []):
+            overworld.locations.append(TowerOfBabelLocation(
+                world.player, 
+                loc["name"], 
+                world.location_name_to_id[loc["name"]], 
+                overworld
+            ))
 
+def create_symbol_locations(world: "TowerOfBabelWorld", overworld) -> None:
+    """Adds all locations categorized as 'Symbols' to the Overworld."""
+    for loc in location_data:
+        if "Symbols" in loc.get("category", []):
+            overworld.locations.append(TowerOfBabelLocation(
+                world.player, 
+                loc["name"], 
+                world.location_name_to_id[loc["name"]], 
+                overworld
+            ))
 
-class ManualLocation(Location):
-    game = game_name
+def create_regular_locations(world: "TowerOfBabelWorld") -> None:
+    """Master function to populate the Overworld with all JSON locations."""
+    overworld = world.get_region("Overworld")
+    
+    # Populate the standard location sub-groups
+    create_letter_locations(world, overworld)
+    create_number_locations(world, overworld)
+    create_symbol_locations(world, overworld)
+    
+    # Add the Victory location manually (exempt from categories)
+    for loc in location_data:
+        if loc.get("victory"):
+            overworld.locations.append(TowerOfBabelLocation(
+                world.player, 
+                loc["name"], 
+                world.location_name_to_id[loc["name"]], 
+                overworld
+            ))

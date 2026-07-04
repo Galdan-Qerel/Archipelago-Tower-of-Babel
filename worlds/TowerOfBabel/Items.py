@@ -1,73 +1,76 @@
-from BaseClasses import Item
-from .Data import item_table
-from .Game import filler_item_name, starting_index, game_name
+from __future__ import annotations
 
+import json
+import pkgutil
+from BaseClasses import Item, ItemClassification
+from .Game import filler_item_name, game_name
+from typing import List, Dict, Any, TYPE_CHECKING
 
-######################
-# Generate item lookups
-######################
+if TYPE_CHECKING:
+    from .world import TowerOfBabelWorld
 
-item_id_to_name: dict[int, str] = {}
-item_name_to_item: dict[str, dict] = {}
-item_name_groups: dict[str, str] = {}
-advancement_item_names: set[str] = set()
-lastItemId = -1
+try:
+    raw_data = pkgutil.get_data(__name__, "data/items.json")
+    item_data: List[Dict[str, Any]] = json.loads(raw_data.decode("utf-8"))
+except Exception as e:
+    raise FileNotFoundError(f"Could not load items.json. Ensure it is in the correct directory. Error: {e}")
 
-count = starting_index
+BASE_ID = 7480000 
+ITEM_NAME_TO_ID = {
+    item["name"]: BASE_ID + index 
+    for index, item in enumerate(item_data, start=1)
+}
+DEFAULT_ITEM_CLASSIFICATIONS = {
+    item["name"]: ItemClassification.progression 
+    for item in item_data
+}
 
-# add the filler item to the list of items for lookup
-if filler_item_name:
-    item_table.append({
-        "name": filler_item_name
-    })
-
-# add sequential generated ids to the lists
-for key, val in enumerate(item_table):
-    if "id" in item_table[key]:
-        item_id = item_table[key]["id"]
-        if item_id >= count:
-            count = item_id
-        else:
-            raise ValueError(f"{item_table[key]['name']} has an invalid ID. ID must be at least {count + 1}")
-
-    item_table[key]["id"] = count
-    item_table[key]["progression"] = val["progression"] if "progression" in val else False
-    if isinstance(val.get("category", []), str):
-        item_table[key]["category"] = [val["category"]]
-
-    count += 1
-
-for item in item_table:
-    item_name = item.get("name", f"Unnamed Item {item['id']}")
-    item_id_to_name[item["id"]] = item_name
-    item_name_to_item[item_name] = item
-
-    if item["id"] is not None:
-        lastItemId = max(lastItemId, item["id"])
-
-    for c in item.get("category", []):
-        if c not in item_name_groups:
-            item_name_groups[c] = []
-        item_name_groups[c].append(item_name)
-
-    #Just lowercase the values here to remove all the .lower.strip down the line
-    item['value'] = {k.lower().strip(): v
-                     for k, v in item.get('value', {}).items()}
-
-    for v in item.get("value", {}).keys():
-        group_name = f"has_{v}_value"
-        if group_name not in item_name_groups:
-            item_name_groups[group_name] = []
-        item_name_groups[group_name].append(item_name)
-
-item_id_to_name[None] = "__Victory__"
-item_name_to_id = {name: id for id, name in item_id_to_name.items()}
-
-
-######################
-# Item classes
-######################
-
-
-class ManualItem(Item):
+class TowerOfBabelItem(Item):
     game = game_name
+
+def get_random_filler_item_name(world: TowerOfBabelWorld) -> str:
+    return filler_item_name
+
+
+def create_item_with_correct_classification(world: TowerOfBabelWorld, name: str) -> TowerOfBabelItem:
+    classification = DEFAULT_ITEM_CLASSIFICATIONS[name]
+
+    return TowerOfBabelItem(name, classification, ITEM_NAME_TO_ID[name], world.player)
+
+def create_letter_items(world) -> list:
+    """Creates a list of Item objects for all items tagged with 'Letters'."""
+    return [
+        world.create_item(item["name"]) 
+        for item in item_data 
+        if "Letters" in item.get("tags", [])
+    ]
+
+def create_number_items(world) -> list:
+    """Creates a list of Item objects for all items tagged with 'Numbers'."""
+    return [
+        world.create_item(item["name"]) 
+        for item in item_data 
+        if "Numbers" in item.get("tags", [])
+    ]
+
+def create_symbol_items(world) -> list:
+    """Creates a list of Item objects for all items tagged with 'Symbols'."""
+    return [
+        world.create_item(item["name"]) 
+        for item in item_data 
+        if "Symbols" in item.get("tags", [])
+    ]
+
+def create_all_items(self):
+    itempool = []
+    
+    # Add the distinct sub-pools
+    itempool += create_letter_items(self)
+    itempool += create_number_items(self)
+    itempool += create_symbol_items(self)
+    
+    # Append the untagged Victory item manually
+    itempool.append(self.create_item("Victory"))
+    
+    # Submit the combined pool to the multiworld
+    self.multiworld.itempool += itempool

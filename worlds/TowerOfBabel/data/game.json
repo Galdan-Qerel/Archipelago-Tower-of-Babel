@@ -1,7 +1,0 @@
-{
-  "$schema": "https://github.com/ManualForArchipelago/Manual/raw/main/schemas/Manual.game.schema.json",
-  "game": "TowerofBabel",
-  "creator": "Galdan",
-  "filler_item_name": "~",
-  "starting_items": []
-}

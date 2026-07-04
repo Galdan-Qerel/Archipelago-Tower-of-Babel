@@ -16,11 +16,13 @@ ModuleUpdate.update()
 
 import Utils
 from CommonClient import CommonContext, server_loop, gui_enabled, ClientCommandProcessor, get_base_parser
-from .Game import game_name
 
-# Import your local manual items dictionary and invert it so we can look up Names by ID
-from .Items import item_name_to_id
-babel_item_id_to_name = {v: k for k, v in item_name_to_id.items()}
+# 1. UPDATED IMPORTS: The '..' tells Python to go up one level to the main TowerOfBabel folder
+from ..Game import game_name
+
+# 2. UPDATED VARIABLE: We now import the dynamically generated ITEM_NAME_TO_ID dictionary
+from ..items import ITEM_NAME_TO_ID
+babel_item_id_to_name = {v: k for k, v in ITEM_NAME_TO_ID.items()}
 
 logger = logging.getLogger("Client")
 
@@ -152,7 +154,6 @@ class BabelCommandProcessor(ClientCommandProcessor):
 
     def _cmd_babelhint(self, *item_name_parts):
         """Search the configured spoiler log for a ciphered location hint. Usage: /babelhint <item name>"""
-        # Ensure the Babel slot is configured before giving a hint
         if not self.ctx.babel_slot:
             self.output("Babel slot not configured. Please use '/babel \"<slot_name>\" [password]' first.")
             return
@@ -241,7 +242,6 @@ class BabelContext(CommonContext):
         await self.send_connect()
 
     def _output_babel_unlock(self, char_norm: str):
-        """Constructs a vibrant UI notification when a new character is translated."""
         nodes = [
             {"text": "[Babel] ", "color": "yellow"},
             {"text": "Data Translated! You can now read the character: "},
@@ -347,7 +347,7 @@ class BabelContext(CommonContext):
             
         super().on_print_json(args)
 
-def launch(*args):
+def launch_tower_of_babel_client(*args):
     async def main(parsed_args):
         ctx = BabelContext(parsed_args.connect, parsed_args.password)
         ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
