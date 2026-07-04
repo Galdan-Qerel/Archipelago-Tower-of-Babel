@@ -1,6 +1,5 @@
 name: Release APWorld
 on:
-  workflow_dispatch: # Enables the manual trigger button
   push:
     tags:
       - '**'
