@@ -20,6 +20,14 @@ ITEM_NAME_TO_ID = {
     item["name"]: BASE_ID + index 
     for index, item in enumerate(item_data, start=1)
 }
+
+item_name_groups = {
+    "All": set(ITEM_NAME_TO_ID.keys()),
+    "Letters": {item["name"] for item in item_data if "Letters" in item.get("tags", [])},
+    "Numbers": {item["name"] for item in item_data if "Numbers" in item.get("tags", [])},
+    "Symbols": {item["name"] for item in item_data if "Symbols" in item.get("tags", [])},
+}
+
 DEFAULT_ITEM_CLASSIFICATIONS = {
     item["name"]: ItemClassification.progression 
     for item in item_data

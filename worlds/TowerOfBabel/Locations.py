@@ -34,6 +34,13 @@ LOCATION_NAME_TO_ID = {
     for index, loc in enumerate(location_data, start=1)
 }
 
+location_name_groups = {
+    "All": set(LOCATION_NAME_TO_ID.keys()),
+    "Letters": {loc["name"] for loc in location_data if "Letters" in loc.get("category", [])},
+    "Numbers": {loc["name"] for loc in location_data if "Numbers" in loc.get("category", [])},
+    "Symbols": {loc["name"] for loc in location_data if "Symbols" in loc.get("category", [])},
+}
+
 class TowerOfBabelLocation(Location):
     game = "TowerOfBabel"
     

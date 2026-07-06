@@ -10,17 +10,16 @@ import os
 import ast
 import re
 import difflib
+import ssl  # Added SSL module to handle certificate bypassing
 
 import ModuleUpdate
 ModuleUpdate.update()
 
 import Utils
 from CommonClient import CommonContext, server_loop, gui_enabled, ClientCommandProcessor, get_base_parser
-
-# 1. UPDATED IMPORTS: The '..' tells Python to go up one level to the main TowerOfBabel folder
 from ..Game import game_name
 
-# 2. UPDATED VARIABLE: We now import the dynamically generated ITEM_NAME_TO_ID dictionary
+# Import your local manual items dictionary and invert it so we can look up Names by ID
 from ..items import ITEM_NAME_TO_ID
 babel_item_id_to_name = {v: k for k, v in ITEM_NAME_TO_ID.items()}
 
@@ -259,10 +258,18 @@ class BabelContext(CommonContext):
         if url and not (url.startswith("ws://") or url.startswith("wss://")):
             url = f"ws://{url}"
 
+        # Setup permissive SSL context to bypass expired/self-signed certificates
+        ssl_context = None
+        if url.startswith("wss://"):
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
         while True:
             try:
                 self.babel_initialized = False
-                async with websockets.connect(url) as ws:
+                # Pass the permissive SSL context into the websocket connection
+                async with websockets.connect(url, ssl=ssl_context) as ws:
                     self.babel_ws = ws
                     connect_packet = [{
                         "cmd": "Connect",
