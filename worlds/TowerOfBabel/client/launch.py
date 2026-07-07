@@ -227,12 +227,22 @@ class BabelContext(CommonContext):
         super().__init__(server_address, password)
         self.unlocked_chars = set()
         
+        self.babel_checked_locations = set() 
         self.babel_slot = None
         self.babel_password = ""
         self.babel_task = None
         self.babel_ws = None
         self.spoiler_log_path = None  
         self.babel_initialized = False
+
+        # Hook into Archipelago's native string resolution to globally scramble the GUI (including the Hint Tab!)
+        if hasattr(self.item_names, 'get_name'):
+            self._orig_item_get_name = self.item_names.get_name
+            self.item_names.get_name = self._scrambled_item_name
+            
+        if hasattr(self.location_names, 'get_name'):
+            self._orig_loc_get_name = self.location_names.get_name
+            self.location_names.get_name = self._scrambled_loc_name
 
     async def server_auth(self, password_requested: bool = False):
         if password_requested and not self.password:
@@ -253,12 +263,40 @@ class BabelContext(CommonContext):
         }
         self.on_print_json(packet)
 
+    def _evaluate_babel_logic(self):
+        new_checks = []
+        for loc_name, loc_id in LOCATION_NAME_TO_ID.items():
+            if loc_id in self.babel_checked_locations:
+                continue
+
+            if loc_name.startswith("Found "):
+                char_req = self.normalize_char(loc_name[6:])
+                if char_req in self.unlocked_chars:
+                    new_checks.append(loc_id)
+                    
+            elif loc_name == "Full Alphabet":
+                if all(c in self.unlocked_chars for c in string.ascii_uppercase):
+                    new_checks.append(loc_id)
+                    
+        return new_checks
+
+    async def check_babel_locations(self):
+        if not self.babel_ws:
+            return
+            
+        new_checks = self._evaluate_babel_logic()
+        
+        if new_checks:
+            packet = [{"cmd": "LocationChecks", "locations": new_checks}]
+            await self.babel_ws.send(json.dumps(packet))
+            self.babel_checked_locations.update(new_checks)
+            logger.info(f"[Babel] Auto-checked {len(new_checks)} location(s)!")
+
     async def connect_babel(self):
         url = self.server_address
         if url and not (url.startswith("ws://") or url.startswith("wss://")):
             url = f"ws://{url}"
 
-        # Setup permissive SSL context to bypass expired/self-signed certificates
         ssl_context = None
         if url.startswith("wss://"):
             ssl_context = ssl.create_default_context()
@@ -268,7 +306,6 @@ class BabelContext(CommonContext):
         while True:
             try:
                 self.babel_initialized = False
-                # Pass the permissive SSL context into the websocket connection
                 async with websockets.connect(url, ssl=ssl_context) as ws:
                     self.babel_ws = ws
                     connect_packet = [{
@@ -289,6 +326,12 @@ class BabelContext(CommonContext):
                             
                             if cmd == "Connected":
                                 logger.info(f"[Babel] Successfully connected to background Babel slot: {self.babel_slot}")
+                                self.babel_checked_locations = set(packet.get("checked_locations", []))
+                                await self.check_babel_locations()
+                                
+                            elif cmd == "RoomUpdate":
+                                if "checked_locations" in packet:
+                                    self.babel_checked_locations.update(packet["checked_locations"])
                             
                             elif cmd == "ReceivedItems":
                                 for item in packet.get("items", []):
@@ -306,6 +349,11 @@ class BabelContext(CommonContext):
                                                 self._output_babel_unlock(char_norm)
                                                 
                                 self.babel_initialized = True
+                                await self.check_babel_locations()
+                                
+                                # Force the Kivy Hint Tab to dynamically redraw with the newly readable text!
+                                if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
+                                    self.ui.update_hints()
                             
                             elif cmd == "ConnectionRefused":
                                 logger.error(f"[Babel] Connection refused: {', '.join(packet.get('errors', []))}")
@@ -327,28 +375,52 @@ class BabelContext(CommonContext):
         normalized = unicodedata.normalize('NFD', char)
         return "".join([c for c in normalized if not unicodedata.combining(c)]).upper()
 
-    def scramble_text_to_nodes(self, text: str) -> list:
+    def scramble_raw_string(self, text: str) -> str:
+        """Scrambles a raw string for Kivy GUI elements like the Hint Tab."""
+        if not text:
+            return text
+        result = ""
+        for char in text:
+            if char.isspace() or self.normalize_char(char) in self.unlocked_chars:
+                result += char
+            else:
+                result += random.choice(string.ascii_letters + string.digits + string.punctuation)
+        return result
+
+    def _scrambled_item_name(self, code: int) -> str:
+        return self.scramble_raw_string(self._orig_item_get_name(code))
+
+    def _scrambled_loc_name(self, code: int) -> str:
+        return self.scramble_raw_string(self._orig_loc_get_name(code))
+
+    def scramble_text_to_nodes(self, text: str, original_color: str = None) -> list:
+        """Scrambles text nodes for the console, preserving Archipelago's native colors for readable text."""
         nodes = []
         for char in text:
             if char.isspace() or self.normalize_char(char) in self.unlocked_chars:
-                nodes.append({"type": "color", "color": "magenta", "text": char})
+                # Retains original item/player coloring for letters you have unlocked
+                nodes.append({"type": "color", "color": original_color or "magenta", "text": char})
             else:
                 scrambled_char = random.choice(string.ascii_letters + string.digits + string.punctuation)
                 nodes.append({"type": "color", "color": "cyan", "text": scrambled_char})
         return nodes
 
     def on_print_json(self, args: dict):
-        if args.get("type") == "Chat":
-            parts = args.get("data", [])
-            full_text = "".join([str(p.get("text", "")) for p in parts])
-            name_part, sep, msg_part = full_text.partition(": ")
-            
+        msg_type = args.get("type", "")
+        
+        # Intercept Chat, Native Server Hints, and general Item Sends for the console log
+        if msg_type in ("Chat", "Hint", "ItemSend", "BabelHint"):
             new_data = []
-            if msg_part:
-                new_data.append({"text": name_part + sep})
-                new_data.extend(self.scramble_text_to_nodes(msg_part))
-            else:
-                new_data.extend(self.scramble_text_to_nodes(full_text))
+            for node in args.get("data", []):
+                original_text = str(node.get("text", ""))
+                original_color = node.get("color")
+                
+                # Protect the sender's name block in Chat messages so it is visually clear who is speaking
+                if msg_type == "Chat" and original_text.endswith(": "):
+                    new_data.append(node)
+                    continue
+                    
+                new_data.extend(self.scramble_text_to_nodes(original_text, original_color))
                 
             args["data"] = new_data
             

@@ -65,6 +65,7 @@
 	{ "name": "Found `", "category": ["Symbols"], "requires": "|Symbol `|" },
 	{ "name": "Found {", "category": ["Symbols"], "requires": "|Symbol {|" },
 	{ "name": "Found }", "category": ["Symbols"], "requires": "|Symbol }|" },
+	{ "name": "Found :", "category": ["Symbols"], "requires": "|Symbol :|" },
 
 	{
 	  "name": "Full Alphabet",

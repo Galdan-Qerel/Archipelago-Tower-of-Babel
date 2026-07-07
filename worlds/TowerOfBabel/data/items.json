@@ -37,12 +37,12 @@
   {
     "name": "Letter H",
     "classification": "progression",
-    "tags": ["Letters"]
+    "tags": ["Letters", "Hint"]
   },
   {
     "name": "Letter I",
     "classification": "progression",
-    "tags": ["Letters"]
+    "tags": ["Letters", "Hint"]
   },
   {
     "name": "Letter J",
@@ -67,7 +67,7 @@
   {
     "name": "Letter N",
     "classification": "progression",
-    "tags": ["Letters"]
+    "tags": ["Letters", "Hint"]
   },
   {
     "name": "Letter O",
@@ -97,7 +97,7 @@
   {
     "name": "Letter T",
     "classification": "progression",
-    "tags": ["Letters"]
+    "tags": ["Letters", "Hint"]
   },
   {
     "name": "Letter U",
@@ -182,7 +182,7 @@
   {
     "name": "Symbol !",
     "classification": "progression",
-    "tags": ["Symbols"]
+    "tags": ["Symbols", "Hint"]
   },
   {
     "name": "Symbol \"",
@@ -316,6 +316,11 @@
   },
   {
     "name": "Symbol }",
+    "classification": "progression",
+    "tags": ["Symbols"]
+  },
+  {
+    "name": "Symbol :",
     "classification": "progression",
     "tags": ["Symbols"]
   },

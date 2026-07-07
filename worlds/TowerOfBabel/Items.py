@@ -5,6 +5,7 @@ import pkgutil
 from BaseClasses import Item, ItemClassification
 from .Game import filler_item_name, game_name
 from typing import List, Dict, Any, TYPE_CHECKING
+from .locations import location_data
 
 if TYPE_CHECKING:
     from .world import TowerOfBabelWorld
@@ -26,6 +27,7 @@ item_name_groups = {
     "Letters": {item["name"] for item in item_data if "Letters" in item.get("tags", [])},
     "Numbers": {item["name"] for item in item_data if "Numbers" in item.get("tags", [])},
     "Symbols": {item["name"] for item in item_data if "Symbols" in item.get("tags", [])},
+    "Hint": {item["name"] for item in item_data if "Hint" in item.get("tags", [])},
 }
 
 DEFAULT_ITEM_CLASSIFICATIONS = {
@@ -69,16 +71,23 @@ def create_symbol_items(world) -> list:
         if "Symbols" in item.get("tags", [])
     ]
 
-def create_all_items(self):
+def create_all_items(world):
     itempool = []
     
     # Add the distinct sub-pools
-    itempool += create_letter_items(self)
-    itempool += create_number_items(self)
-    itempool += create_symbol_items(self)
+    itempool += create_letter_items(world)
+    itempool += create_number_items(world)
+    itempool += create_symbol_items(world)
     
-    # Append the untagged Victory item manually
-    itempool.append(self.create_item("Victory"))
+    # Submit the randomized items to the multiworld pool
+    world.multiworld.itempool += itempool
     
-    # Submit the combined pool to the multiworld
-    self.multiworld.itempool += itempool
+    # Loop through the JSON data to handle forced item placements
+    for loc in location_data:
+        if "place_item" in loc:
+            for item_name in loc["place_item"]:
+                # Fetch the actual location object we created earlier in Regions.py
+                location_obj = world.multiworld.get_location(loc["name"], world.player)
+                
+                # Lock the item directly to the location so it never randomizes
+                location_obj.place_locked_item(world.create_item(item_name))
