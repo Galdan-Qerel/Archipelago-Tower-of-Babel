@@ -23,6 +23,9 @@ from ..Game import game_name
 from ..items import ITEM_NAME_TO_ID
 babel_item_id_to_name = {v: k for k, v in ITEM_NAME_TO_ID.items()}
 
+from ..locations import LOCATION_NAME_TO_ID
+
+
 logger = logging.getLogger("Client")
 
 # -----------------------------
@@ -408,18 +411,47 @@ class BabelContext(CommonContext):
     def on_print_json(self, args: dict):
         msg_type = args.get("type", "")
         
-        # Intercept Chat, Native Server Hints, and general Item Sends for the console log
-        if msg_type in ("Chat", "Hint", "ItemSend", "BabelHint"):
+        # 1. Handle Chat messages securely by collapsing the nodes and splitting them
+        if msg_type == "Chat":
+            parts = args.get("data", [])
+            full_text = "".join([str(p.get("text", "")) for p in parts])
+            
+            # Attempt to preserve the sender's original name color if the server provided one
+            name_color = next((p.get("color") for p in parts if p.get("color")), None)
+            
+            # Find the colon that separates the player name from their message
+            name_part, sep, msg_part = full_text.partition(": ")
+            
+            new_data = []
+            if msg_part:
+                # Protect everything before the colon so the sender's name is perfectly readable
+                sender_node = {"text": name_part + sep}
+                if name_color:
+                    sender_node["color"] = name_color
+                new_data.append(sender_node)
+                
+                # Scramble the actual chat message they sent!
+                new_data.extend(self.scramble_text_to_nodes(msg_part))
+            else:
+                # If there's no colon (e.g., a generic server broadcast), scramble the whole thing
+                new_data.extend(self.scramble_text_to_nodes(full_text))
+                
+            args["data"] = new_data
+            
+        # 2. Handle AP System Messages (Hints, ItemSends, BabelHints)
+        elif msg_type in ("Hint", "ItemSend", "BabelHint"):
             new_data = []
             for node in args.get("data", []):
+                node_type = node.get("type")
                 original_text = str(node.get("text", ""))
                 original_color = node.get("color")
                 
-                # Protect the sender's name block in Chat messages so it is visually clear who is speaking
-                if msg_type == "Chat" and original_text.endswith(": "):
+                # Protect Archipelago's native player nodes so you can read WHO sent or received an item
+                if node_type in ("player_id", "player_name"):
                     new_data.append(node)
                     continue
                     
+                # Scramble everything else (Items, Locations, and standard text)
                 new_data.extend(self.scramble_text_to_nodes(original_text, original_color))
                 
             args["data"] = new_data
