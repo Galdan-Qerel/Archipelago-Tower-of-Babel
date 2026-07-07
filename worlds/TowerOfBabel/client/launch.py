@@ -239,13 +239,13 @@ class BabelContext(CommonContext):
         self.babel_initialized = False
 
         # Hook into Archipelago's native string resolution to globally scramble the GUI (including the Hint Tab!)
-        if hasattr(self.item_names, 'get_name'):
-            self._orig_item_get_name = self.item_names.get_name
-            self.item_names.get_name = self._scrambled_item_name
+        if hasattr(self.item_names, 'lookup_in_game'):
+            self._orig_item_get_name = self.item_names.lookup_in_game
+            self.item_names.lookup_in_game = self._scrambled_item_name
             
-        if hasattr(self.location_names, 'get_name'):
-            self._orig_loc_get_name = self.location_names.get_name
-            self.location_names.get_name = self._scrambled_loc_name
+        if hasattr(self.location_names, 'lookup_in_game'):
+            self._orig_loc_get_name = self.location_names.lookup_in_game
+            self.location_names.lookup_in_game = self._scrambled_loc_name
 
     async def server_auth(self, password_requested: bool = False):
         if password_requested and not self.password:
@@ -335,17 +335,17 @@ class BabelContext(CommonContext):
                             elif cmd == "RoomUpdate":
                                 if "checked_locations" in packet:
                                     self.babel_checked_locations.update(packet["checked_locations"])
-                            
                             elif cmd == "ReceivedItems":
                                 for item in packet.get("items", []):
                                     item_id = item.get("item")
                                     item_name = babel_item_id_to_name.get(item_id)
                                     
                                     if item_name:
-                                        char_part = item_name.split(" ", 1)[-1] if " " in item_name else item_name
+                                        # Added .strip() to ensure trailing spaces don't corrupt the unlock matching
+                                        char_part = item_name.split(" ", 1)[-1].strip() if " " in item_name else item_name.strip()
                                         char_norm = self.normalize_char(char_part)
                                         
-                                        if char_norm not in self.unlocked_chars:
+                                        if char_norm and char_norm not in self.unlocked_chars:
                                             self.unlocked_chars.add(char_norm)
                                             
                                             if self.babel_initialized:
@@ -354,7 +354,6 @@ class BabelContext(CommonContext):
                                 self.babel_initialized = True
                                 await self.check_babel_locations()
                                 
-                                # Force the Kivy Hint Tab to dynamically redraw with the newly readable text!
                                 if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
                                     self.ui.update_hints()
                             
@@ -374,8 +373,20 @@ class BabelContext(CommonContext):
             base_title = "Tower of Babel Multi-Client"
         return BabelManager
 
+    def _scrambled_item_name(self, *args, **kwargs) -> str:
+        """Safely catches any arguments AP passes, fetches the string, and scrambles it."""
+        original_text = self._orig_item_get_name(*args, **kwargs)
+        return self.scramble_raw_string(str(original_text))
+
+    def _scrambled_loc_name(self, *args, **kwargs) -> str:
+        """Safely catches any arguments AP passes, fetches the string, and scrambles it."""
+        original_text = self._orig_loc_get_name(*args, **kwargs)
+        return self.scramble_raw_string(str(original_text))
+
     def normalize_char(self, char: str) -> str:
-        normalized = unicodedata.normalize('NFD', char)
+        if not char:
+            return ""
+        normalized = unicodedata.normalize('NFD', str(char))
         return "".join([c for c in normalized if not unicodedata.combining(c)]).upper()
 
     def scramble_raw_string(self, text: str) -> str:
@@ -387,75 +398,124 @@ class BabelContext(CommonContext):
             if char.isspace() or self.normalize_char(char) in self.unlocked_chars:
                 result += char
             else:
-                result += random.choice(string.ascii_letters + string.digits + string.punctuation)
+                # Removed string.punctuation to prevent Kivy markup crashes (no accidental '[' or ']')
+                result += random.choice(string.ascii_letters + string.digits)
         return result
 
-    def _scrambled_item_name(self, code: int) -> str:
-        return self.scramble_raw_string(self._orig_item_get_name(code))
-
-    def _scrambled_loc_name(self, code: int) -> str:
-        return self.scramble_raw_string(self._orig_loc_get_name(code))
-
     def scramble_text_to_nodes(self, text: str, original_color: str = None) -> list:
-        """Scrambles text nodes for the console, preserving Archipelago's native colors for readable text."""
+        """Scrambles text nodes for the console, preserving Archipelago's native colors."""
         nodes = []
         for char in text:
             if char.isspace() or self.normalize_char(char) in self.unlocked_chars:
-                # Retains original item/player coloring for letters you have unlocked
                 nodes.append({"type": "color", "color": original_color or "magenta", "text": char})
             else:
-                scrambled_char = random.choice(string.ascii_letters + string.digits + string.punctuation)
+                # Removed string.punctuation to prevent Kivy markup crashes (no accidental '[' or ']')
+                scrambled_char = random.choice(string.ascii_letters + string.digits)
                 nodes.append({"type": "color", "color": "cyan", "text": scrambled_char})
         return nodes
+    def resolve_raw_ap_node(self, node: dict) -> dict:
+        """PHASE 1: Converts a raw AP node into the correct English string, ignoring numeric fallbacks."""
+        resolved = node.copy()
+        node_type = resolved.get("type")
+        
+        # Multiworld Fix: Find out which player owns this node and fetch their specific game from slot_info!
+        node_player = int(resolved.get("player", self.slot))
+        game_name = ""
+        if hasattr(self, "slot_info") and node_player in self.slot_info:
+            game_name = self.slot_info[node_player].game
 
+        # 1. Force Item IDs to translate into English text using the correct game's dictionary
+        if node_type in ("item_id", "item_name"):
+            try:
+                item_id = int(resolved.get("item", resolved.get("text", 0)))
+                if hasattr(self, '_orig_item_get_name'):
+                    resolved["text"] = self._orig_item_get_name(item_id, game_name)
+                elif hasattr(self.item_names, 'lookup_in_game'):
+                    resolved["text"] = self.item_names.lookup_in_game(item_id, game_name)
+                else:
+                    resolved["text"] = self.item_names.get(item_id, str(item_id))
+            except ValueError:
+                resolved["text"] = str(resolved.get("text", ""))
+                
+        # 2. Force Location IDs to translate into English text using the correct game's dictionary
+        elif node_type in ("location_id", "location_name"):
+            try:
+                loc_id = int(resolved.get("location", resolved.get("text", 0)))
+                if hasattr(self, '_orig_loc_get_name'):
+                    resolved["text"] = self._orig_loc_get_name(loc_id, game_name)
+                elif hasattr(self.location_names, 'lookup_in_game'):
+                    resolved["text"] = self.location_names.lookup_in_game(loc_id, game_name)
+                else:
+                    resolved["text"] = self.location_names.get(loc_id, str(loc_id))
+            except ValueError:
+                resolved["text"] = str(resolved.get("text", ""))
+                
+        # 3. For Player nodes, leave them completely untouched.
+        elif node_type in ("player_id", "player_name"):
+            pass
+            
+        # 4. Standard text strings (like " sent " or " to ")
+        else:
+            resolved["text"] = str(resolved.get("text", ""))
+            
+        return resolved
+        
     def on_print_json(self, args: dict):
         msg_type = args.get("type", "")
         
-        # 1. Handle Chat messages securely by collapsing the nodes and splitting them
+        # Never scramble our own Babel notification messages
+        if msg_type in ["BabelUnlock", "ServerChat","CommandResult","Join","Part","Tutorial","TagsChanged","AdminCommandResult"]:
+            super().on_print_json(args)
+            return
+
+        # =========================================================================
+        # PHASE 1: Convert ALL raw input into exactly what would print to the console
+        # =========================================================================
+        raw_nodes = args.get("data", [])
+        
+        # LOGGING STEP 1: What did the server actually send us?
+        #logger.info(f"\n[PIPELINE - 1. RAW INPUT]:\n{raw_nodes}")
+        
+        resolved_nodes = [self.resolve_raw_ap_node(node) for node in raw_nodes]
+
+        # LOGGING STEP 2: Did our dictionary successfully translate the IDs to English?
+        resolved_string = "".join([n.get("text", "") for n in resolved_nodes])
+        #logger.info(f"[PIPELINE - 2. RESOLVED TEXT]:\n{resolved_string}")
+
+        # =========================================================================
+        # PHASE 2: Run the finalized English text through the scrambling engine
+        # =========================================================================
+        new_data = []
+        
         if msg_type == "Chat":
-            parts = args.get("data", [])
-            full_text = "".join([str(p.get("text", "")) for p in parts])
+            # For chat, collapse all resolved nodes into one string to find the colon
+            full_text = "".join([n["text"] for n in resolved_nodes])
+            name_color = next((n.get("color") for n in resolved_nodes if n.get("color")), None)
             
-            # Attempt to preserve the sender's original name color if the server provided one
-            name_color = next((p.get("color") for p in parts if p.get("color")), None)
-            
-            # Find the colon that separates the player name from their message
             name_part, sep, msg_part = full_text.partition(": ")
-            
-            new_data = []
             if msg_part:
-                # Protect everything before the colon so the sender's name is perfectly readable
                 sender_node = {"text": name_part + sep}
                 if name_color:
                     sender_node["color"] = name_color
                 new_data.append(sender_node)
-                
-                # Scramble the actual chat message they sent!
                 new_data.extend(self.scramble_text_to_nodes(msg_part))
             else:
-                # If there's no colon (e.g., a generic server broadcast), scramble the whole thing
                 new_data.extend(self.scramble_text_to_nodes(full_text))
                 
-            args["data"] = new_data
-            
-        # 2. Handle AP System Messages (Hints, ItemSends, BabelHints)
-        elif msg_type in ("Hint", "ItemSend", "BabelHint"):
-            new_data = []
-            for node in args.get("data", []):
-                node_type = node.get("type")
-                original_text = str(node.get("text", ""))
-                original_color = node.get("color")
-                
-                # Protect Archipelago's native player nodes so you can read WHO sent or received an item
-                if node_type in ("player_id", "player_name"):
+        else:
+            # For Hints, ItemSends, etc., scramble the resolved text node-by-node
+            for node in resolved_nodes:
+                # Protect Archipelago's native player nodes so you know WHO is doing the action
+                if node.get("type") in ("player_id", "player_name"):
                     new_data.append(node)
-                    continue
-                    
-                # Scramble everything else (Items, Locations, and standard text)
-                new_data.extend(self.scramble_text_to_nodes(original_text, original_color))
+                else:
+                    new_data.extend(self.scramble_text_to_nodes(node["text"], node.get("color")))
                 
-            args["data"] = new_data
-            
+        # LOGGING STEP 3: Did the scrambler respect our unlocked characters?
+        scrambled_string = "".join([str(n.get("text", "")) for n in new_data])
+        #logger.info(f"[PIPELINE - 3. SCRAMBLED OUTPUT]:\n{scrambled_string}\n")
+                
+        args["data"] = new_data
         super().on_print_json(args)
 
 def launch_tower_of_babel_client(*args):
