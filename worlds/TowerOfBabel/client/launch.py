@@ -284,16 +284,22 @@ class BabelContext(CommonContext):
         return new_checks
 
     async def check_babel_locations(self):
+        """Evaluates location logic and sends checks explicitly to the background Babel server."""
         if not self.babel_ws:
             return
             
-        new_checks = self._evaluate_babel_logic()
+        # Ensure all IDs are strict integers so the JSON perfectly matches AP protocols
+        new_checks = [int(loc_id) for loc_id in self._evaluate_babel_logic()]
         
         if new_checks:
             packet = [{"cmd": "LocationChecks", "locations": new_checks}]
+            
+            # Log the raw packet so we can see exactly what IDs are being sent to the server!
+            logger.info(f"[Babel] Firing LocationChecks packet: {packet}")
+            
             await self.babel_ws.send(json.dumps(packet))
             self.babel_checked_locations.update(new_checks)
-            logger.info(f"[Babel] Auto-checked {len(new_checks)} location(s)!")
+            logger.info(f"[Babel] Auto-checked {len(new_checks)} location(s) on the background slot!")
 
     async def connect_babel(self):
         url = self.server_address
@@ -315,8 +321,8 @@ class BabelContext(CommonContext):
                         "cmd": "Connect",
                         "password": self.babel_password,
                         "name": self.babel_slot,
-                        "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
-                        "tags": ["TextOnly"],
+                        "version": {"major": 0, "minor": 6, "build": 7, "class": "Version"},
+                        "tags": ["AP"],  # <--- PROMOTED TO A FULL GAME CLIENT!
                         "items_handling": 7,
                         "game": game_name,
                         "uuid": str(uuid.uuid4())
@@ -335,13 +341,16 @@ class BabelContext(CommonContext):
                             elif cmd == "RoomUpdate":
                                 if "checked_locations" in packet:
                                     self.babel_checked_locations.update(packet["checked_locations"])
+                            
                             elif cmd == "ReceivedItems":
                                 for item in packet.get("items", []):
-                                    item_id = item.get("item")
+                                    # Raw background websocket packets are dicts, not NetworkItems!
+                                    item_id = item.get("item", 0)
+                                    
+                                    # EXCLUSIVELY look up items belonging to Tower of Babel
                                     item_name = babel_item_id_to_name.get(item_id)
                                     
                                     if item_name:
-                                        # Added .strip() to ensure trailing spaces don't corrupt the unlock matching
                                         char_part = item_name.split(" ", 1)[-1].strip() if " " in item_name else item_name.strip()
                                         char_norm = self.normalize_char(char_part)
                                         
@@ -354,6 +363,7 @@ class BabelContext(CommonContext):
                                 self.babel_initialized = True
                                 await self.check_babel_locations()
                                 
+                                # Force the Kivy Hint Tab to dynamically redraw
                                 if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
                                     self.ui.update_hints()
                             
