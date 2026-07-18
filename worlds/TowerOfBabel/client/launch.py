@@ -216,7 +216,79 @@ class BabelCommandProcessor(ClientCommandProcessor):
             "type": "BabelHint"
         }
         self.ctx.on_print_json(packet)
+    def _cmd_babelhintloc(self, *args: str):
+        """
+        Scout a location using the local spoiler log with owner info.
+        Usage: /babelhintloc [Location Name]
+        """
+        if not args:
+            self.output("Usage: /babelhintloc [Location Name]")
+            return
 
+        if not self.ctx.spoiler_log_path:
+            self.output("Please configure the spoiler log path first using /babelspoiler.")
+            return
+
+        location_name = " ".join(args).strip().lower()
+        
+        try:
+            locations, _, _ = load_spoiler_log(self.ctx.spoiler_log_path)
+        except Exception as e:
+            self.output(f"Error reading spoiler log: {e}")
+            return
+
+        found_item = None
+        found_owner = "Unknown"
+        
+        for item, loc_list in locations.items():
+            for loc in loc_list:
+                # loc format is usually "Location Name (Player Name)"
+                if location_name in loc.lower():
+                    found_item = item.split(' (')[0]
+                    # Extract the player name inside the parentheses
+                    if '(' in loc and ')' in loc:
+                        found_owner = loc.split('(')[-1].split(')')[0]
+                    break
+            if found_item:
+                break
+        
+        if not found_item:
+            self.output(f"[Babel Error] Could not find '{location_name}' in the spoiler log.")
+            return
+
+        # Update the UI with both the item and the owner
+        fake_loc_info = {
+            "item": f"{found_item} (Owner: {found_owner})", 
+            "location": location_name,
+            "player": self.ctx.slot,
+            "flags": 0
+        }
+        
+        if not hasattr(self.ctx, "babel_private_hints"):
+            self.ctx.babel_private_hints = []
+        
+        self.ctx.babel_private_hints.append(fake_loc_info)
+        
+        if hasattr(self.ctx, "ui") and self.ctx.ui and hasattr(self.ctx.ui, "update_hints"):
+            self.ctx.ui.update_hints()
+            
+        # 1. Prepare the display string
+        display_text = f"{found_item} (Owner: {found_owner})"
+        
+        # 2. Scramble the text nodes just like a standard Babel hint
+        # We use 'magenta' to match your unlock notification color style
+        nodes = [{"text": f"BabelHint for {location_name}:\nLocation: "}]
+        nodes.extend(self.ctx.scramble_text_to_nodes(display_text, original_color="magenta"))
+        
+        # 3. Create a fake packet to trigger your existing UI handling
+        fake_packet = {
+            "cmd": "PrintJSON",
+            "data": nodes,
+            "type": "BabelHint" # This matches the type in your UI's hint handler
+        }
+        
+        # 4. Inject directly into the UI via your existing print handler
+        self.ctx.on_print_json(fake_packet)
 # -----------------------------
 # CONTEXT MANAGER
 # -----------------------------
@@ -366,7 +438,6 @@ class BabelContext(CommonContext):
                                 # Force the Kivy Hint Tab to dynamically redraw
                                 if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
                                     self.ui.update_hints()
-                            
                             elif cmd == "ConnectionRefused":
                                 logger.error(f"[Babel] Connection refused: {', '.join(packet.get('errors', []))}")
                                 return
@@ -423,6 +494,34 @@ class BabelContext(CommonContext):
                 scrambled_char = random.choice(string.ascii_letters + string.digits)
                 nodes.append({"type": "color", "color": "cyan", "text": scrambled_char})
         return nodes
+    
+    def on_packet(self, packet: dict):
+        if packet.get("cmd") != "PrintJSON": # Filter out noise
+            logger.info(f"[Babel DEBUG] Received packet cmd: {packet.get('cmd')}")
+        # Allow the original client to process the packet first
+        super().on_packet(packet)
+        
+        # Intercept the LocationInfo packet coming from the PRIMARY server
+        if packet.get("cmd") == "LocationInfo":
+            logger.info("[Babel] Intercepted LocationInfo from primary server!")
+            
+            if not hasattr(self, "babel_private_hints"):
+                self.babel_private_hints = []
+                
+            for loc in packet.get("locations", []):
+                loc_dict = {
+                    "item": loc.get("item"),
+                    "location": loc.get("location"),
+                    "player": loc.get("player"),
+                    "flags": loc.get("flags")
+                }
+                if loc_dict not in self.babel_private_hints:
+                    self.babel_private_hints.append(loc_dict)
+                    logger.info(f"[Babel] Data saved for Location {loc_dict['location']}")
+            
+            # Force UI update
+            if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
+                self.ui.update_hints()
     def resolve_raw_ap_node(self, node: dict) -> dict:
         """PHASE 1: Converts a raw AP node into the correct English string, ignoring numeric fallbacks."""
         resolved = node.copy()
@@ -527,7 +626,19 @@ class BabelContext(CommonContext):
                 
         args["data"] = new_data
         super().on_print_json(args)
-
+    
+    async def scout_locations_silently(self, location_ids: list[int], target_slot: int):
+        """Sends a private scout packet over the primary connection."""
+        packet = {
+            "cmd": "LocationScouts",
+            "locations": location_ids,
+            "create_as_hint": 0,
+            "player": target_slot
+        }
+        
+        logger.info(f"[Babel] Firing silent scout via primary connection: {location_ids}")
+        # Use the primary connection instead of the background websocket
+        await self.send_msgs([packet])
 def launch_tower_of_babel_client(*args):
     async def main(parsed_args):
         ctx = BabelContext(parsed_args.connect, parsed_args.password)
