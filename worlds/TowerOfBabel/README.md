@@ -73,7 +73,6 @@ Searches the configured spoiler log for an item belonging to your connected main
 * **Native Hint Integration:** Bypassing the need for a local spoiler log by hooking the scrambling engine directly into Archipelago's native `!hint` system.
 * **Visual Tracker GUI:** Adding a dedicated visual grid to the Archipelago launcher window that displays the alphabet and illuminates symbols as they are unlocked, replacing the need to type `/unlocked`.
 * **Babel Hint Location:** Babel hints for locations
-* **Fix Logic:** Currently all Sphere 1
 * **Better McGuffin Support:** Only lists 10, does not indicate if found or not and does not filter out found
 * **Hint tab integration:** Get babel hints to show in the hint tab
 * **Automatic native hint cost reduction:** If the player finds any of !HINT, reduce the native hint cost by a flat amount
