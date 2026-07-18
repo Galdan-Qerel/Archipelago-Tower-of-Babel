@@ -67,11 +67,11 @@
 	{ "name": "Found }", "category": ["Symbols"], "requires": "|Symbol }|" },
 	{ "name": "Found :", "category": ["Symbols"], "requires": "|Symbol :|" },
 
-	{
+{
 	  "name": "Full Alphabet",
 	  "victory": true,
 	  "category": [],
-	  "requires": "|@Letter:26|",
+	  "requires": "|@Letters:26|",
 	  "place_item": ["Victory"]
 	}
 ]

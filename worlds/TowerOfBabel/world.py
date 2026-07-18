@@ -17,6 +17,8 @@ class TowerOfBabelWorld(World):
     #options: apquest_options.APQuestOptions    
     location_name_to_id = locations.LOCATION_NAME_TO_ID
     item_name_to_id = items.ITEM_NAME_TO_ID
+    item_name_groups = items.item_name_groups
+    location_name_groups = locations.location_name_groups
     origin_region_name = "Overworld"
 
     def create_regions(self) -> None:
