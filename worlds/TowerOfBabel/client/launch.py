@@ -8,7 +8,6 @@ import json
 import uuid
 import os
 import ast
-import re
 import difflib
 import ssl  # Added SSL module to handle certificate bypassing
 from typing import Any
@@ -31,26 +30,9 @@ logger = logging.getLogger("Client")
 # -----------------------------
 # SPOILER LOG PARSER LOGIC
 # -----------------------------
-def parse_item_links(line: str) -> list:
-    raw = line.split("Item Links:", 1)[1].strip()
-    if not raw:
-        return []
-    raw = "[" + raw + "]"
-    try:
-        data = ast.literal_eval(raw)
-    except Exception:
-        return []
-
-    names = []
-    for entry in data:
-        if isinstance(entry, dict) and "name" in entry:
-            names.append(str(entry["name"]))
-    return names
-
 def load_spoiler_log(spoiler_file: str):
     locations = {}
     worlds = set()
-    itemlinks = set()
     in_locations = False
 
     with open(spoiler_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -62,12 +44,6 @@ def load_spoiler_log(spoiler_file: str):
             if line.startswith("Player ") and ":" in line:
                 _, world = line.split(":", 1)
                 worlds.add(world.strip())
-                continue
-
-            if line.startswith("Item Links:"):
-                extracted = parse_item_links(line)
-                for name in extracted:
-                    itemlinks.add(name)
                 continue
 
             if line == "Locations:":
@@ -104,7 +80,7 @@ def load_spoiler_log(spoiler_file: str):
                         locations[item] = []
                     locations[item].append(loc.strip())
 
-    return locations, sorted(worlds), sorted(itemlinks)
+    return locations, sorted(worlds)
 
 # -----------------------------
 # COMMAND PROCESSOR
@@ -193,7 +169,7 @@ class BabelCommandProcessor(ClientCommandProcessor):
         full_query = f"{item_name} ({identifier})"
         
         try:
-            locations, valid_worlds, valid_itemlinks = load_spoiler_log(self.ctx.spoiler_log_path)
+            locations, valid_worlds = load_spoiler_log(self.ctx.spoiler_log_path)
         except Exception as e:
             self.output(f"Error parsing spoiler log: {e}")
             return
@@ -216,17 +192,11 @@ class BabelCommandProcessor(ClientCommandProcessor):
                     loc_name_clean = parts[0].strip()
                     sender_name = parts[1][:-1].strip()
                     
-                    # 2. Resolve the Sender's Player ID
+                    # 2. Resolve the Sender's Player ID safely
                     if hasattr(self.ctx, "player_names"):
                         for p_id, p_name in self.ctx.player_names.items():
                             if p_name == sender_name:
                                 sender_id = p_id
-                                break
-                    # Fallback for different AP versions
-                    if not sender_id and hasattr(self.ctx, "slot_info"):
-                        for s_id, s_data in self.ctx.slot_info.items():
-                            if getattr(s_data, "name", "") == sender_name:
-                                sender_id = s_id
                                 break
                                 
                     # 3. Resolve the Location ID
@@ -255,16 +225,35 @@ class BabelCommandProcessor(ClientCommandProcessor):
             self.output(f"[Babel] Status for '{full_query}': {len(found_locs)} Found, {len(unfound_locs)} Remaining.")
             
             if unfound_locs:
-                import asyncio
                 for loc_str, loc_id, target_slot in unfound_locs:
-                    if loc_id and target_slot == self.ctx.slot:
-                        # LOCAL: Fire normal silent scout using our own connection
-                        asyncio.create_task(self.ctx.scout_locations_silently([loc_id], target_slot))
-                    elif loc_id and target_slot:
-                        # REMOTE: Fire the ghost client to sneak in, get the flags, and feed our UI!
-                        asyncio.create_task(self.ghost_scout_location(loc_id, target_slot))
+                    if loc_id and target_slot:
+                        # Extract the owner name cleanly from the spoiler log string
+                        owner_name = f"Player {target_slot}"
+                        if " (" in loc_str and loc_str.endswith(")"):
+                            owner_name = loc_str.rsplit(" (", 1)[1][:-1].strip()
+
+                        # Skip all lookups! We construct the package manually using the queried item_name,
+                        # and explicitly set its text color to "plum" (Progression).
+                        nodes = [
+                            {"text": "[Babel Scout] ", "color": "green"},
+                            {"type": "text", "text": owner_name, "color": "yellow"},
+                            {"text": "'s "},
+                            {"type": "location_id", "location": loc_id, "text": str(loc_id)},
+                            {"text": " contains "},
+                            {"type": "text", "text": item_name, "color": "plum"},
+                            {"text": " belonging to "},
+                            {"type": "player_id", "player": self.ctx.slot, "text": str(self.ctx.slot)},
+                            {"text": ".\n"}
+                        ]
+                        
+                        package = {
+                            "cmd": "PrintJSON",
+                            "data": nodes,
+                            "type": "BabelHint"
+                        }
+                        self.ctx.on_print_json(package)
                     else:
-                        # FALLBACK: Only print raw text if the ID literally could not be found
+                        # Fallback: Print raw text only if the Location ID literally could not be found
                         self._output_babelhint_result(full_query, loc_str)
             else:
                 self.output(f"All locations for '{item_name}' have already been found! No hints needed.")
@@ -281,6 +270,7 @@ class BabelCommandProcessor(ClientCommandProcessor):
                 self.output(f" - {g}")
         else:
             self.output(f"Could not find any items for '{identifier}' matching '{item_name}'.")
+
     def _output_babelhint_result(self, item_name: str, raw_location: str):
         nodes = [{"text": f"BabelHint for {item_name}:\nLocation: "}]
         nodes.extend(self.ctx.scramble_text_to_nodes(raw_location))
@@ -291,6 +281,7 @@ class BabelCommandProcessor(ClientCommandProcessor):
             "type": "BabelHint"
         }
         self.ctx.on_print_json(package)
+
     def _cmd_babelhintloc(self, *args: str):
         """
         Scout a location silently via the server.
@@ -328,89 +319,12 @@ class BabelCommandProcessor(ClientCommandProcessor):
             self.output(f"[Babel Error] Could not find '{location_name}' in any connected world.")
             return
             
-
-        # 3. Fire the scout request with the exact packet structure requested
-        packet = {
-            "cmd": "LocationScouts",
-            "locations": [location_id],
-            "create_as_hint": 0, # Stays off the web tracker
-        }
-        
-        # 4. Wrap the async send_msgs call in a task so it fires from the synchronous command processor
-        import asyncio
-        asyncio.create_task(self.ctx.send_msgs([packet]))
-        
         self.output(f"[Babel] Scouting '{location_name}' (Targeting slot {target_slot})...")
-    
-    async def ghost_scout_location(self, location_id: int, target_slot: int):
-        """Spawns a temporary silent websocket to scout a remote location, then injects the colored node."""
-        import websockets
-        import json
-        import uuid
-        import ssl
-        import asyncio
-
-        # Resolve the exact name of the slot we need to impersonate
-        target_name = self.ctx.player_names.get(target_slot, f"Player {target_slot}")
         
-        url = self.ctx.server_address
-        if url and not (url.startswith("ws://") or url.startswith("wss://")):
-            url = f"ws://{url}"
+        # 2. Wrap the async send_msgs call in a task so it fires from the synchronous command processor
+        import asyncio
+        asyncio.create_task(self.ctx.scout_locations_silently([location_id], target_slot))
 
-        ssl_context = None
-        if url.startswith("wss://"):
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-
-        try:
-            async with websockets.connect(url, ssl=ssl_context) as ws:
-                # 1. Authenticate silently as the TARGET player using the Tracker tag
-                connect_package = [{
-                    "cmd": "Connect",
-                    "password": self.ctx.password if self.ctx.password else "", 
-                    "name": target_name,
-                    "version": {"major": 0, "minor": 6, "build": 7, "class": "Version"},
-                    "tags": ["Tracker"],  # Prevents join/leave spam in the main chat
-                    "items_handling": 0,
-                    "game": self.ctx.slot_info[target_slot].game,
-                    "uuid": str(uuid.uuid4())
-                }]
-                await ws.send(json.dumps(connect_package))
-
-                # 2. Wait for connection, fire scout, catch response, and disconnect
-                async for message in ws:
-                    for package in json.loads(message):
-                        cmd = package.get("cmd")
-                        
-                        if cmd == "Connected":
-                            # We are in! Ask for the specific location flag silently.
-                            scout_pkg = [{
-                                "cmd": "LocationScouts",
-                                "locations": [location_id],
-                                "create_as_hint": 0
-                            }]
-                            await ws.send(json.dumps(scout_pkg))
-                            
-                        elif cmd == "LocationInfo":
-                            # INJECT: Add the target slot so the UI knows whose world this is!
-                            for loc_dict in package.get("locations", []):
-                                loc_dict["location_player"] = target_slot
-
-                            # We got the colored network item! Pipe it directly to the UI.
-                            if hasattr(self, "on_package"):
-                                self.on_package("LocationInfo", package)
-                            else:
-                                self.ctx.on_package("LocationInfo", package)
-                                
-                            return
-                            
-                        elif cmd == "ConnectionRefused":
-                            self.output(f"[Babel Error] Ghost scout failed. Slot '{target_name}' rejected the connection.")
-                            return
-                            
-        except Exception as e:
-            self.output(f"[Babel Error] Ghost scout crashed: {e}")
 # -----------------------------
 # CONTEXT MANAGER
 # -----------------------------
@@ -431,6 +345,7 @@ class BabelContext(CommonContext):
         self.babel_ws = None
         self.spoiler_log_path = None  
         self.babel_initialized = False
+        self.babel_private_hints = []
 
         # Hook into Archipelago's native string resolution to globally scramble the GUI (including the Hint Tab!)
         if hasattr(self.item_names, 'lookup_in_game'):
@@ -619,38 +534,25 @@ class BabelContext(CommonContext):
         return nodes
     
     def on_package(self, cmd: str, args: dict[str, Any]) -> None:
-        logger.info(f"[Babel DEBUG] Received package cmd: {cmd}")
+        #logger.info(f"[Babel DEBUG] Received package cmd: {cmd}")
         
         # Allow the original client to process the package first
         super().on_package(cmd, args)
         
         # Intercept the LocationInfo package coming from the PRIMARY server
-        # Intercept the LocationInfo package coming from the PRIMARY server
         if cmd == "LocationInfo":
             logger.info("[Babel] Intercepted LocationInfo from primary server!")
-            
-            if not hasattr(self, "babel_private_hints"):
-                self.babel_private_hints = []
                 
             for loc in args.get("locations", []):
                 # ADDED: Output the raw NetworkItem to the console for debugging
-                logger.info(f"[Babel DEBUG] Raw NetworkItem: {loc}")
+                #logger.info(f"[Babel DEBUG] Raw NetworkItem: {loc}")
                 
-                # Multiworld Fix: Safely handle BOTH dicts (Ghost Client) and objects (Main Client)
-                if isinstance(loc, dict):
-                    item_id = loc.get("item", 0)
-                    location_id = loc.get("location", 0)
-                    player_id = loc.get("player", 0)
-                    flags = loc.get("flags", 0)
-                    # Get the injected owner, or fallback to our own slot
-                    location_player = loc.get("location_player", self.slot)
-                else:
-                    item_id = loc.item
-                    location_id = loc.location
-                    player_id = loc.player
-                    flags = loc.flags
-                    # If it's a native object from the main client, it's always our own world
-                    location_player = self.slot
+                # We are only receiving native packets now, so we simply parse the class object
+                item_id = loc.item
+                location_id = loc.location
+                player_id = loc.player
+                flags = loc.flags
+                location_player = self.slot
                 
                 # 1. Save to your internal dictionary for the Kivy UI Tab
                 loc_dict = {
@@ -659,10 +561,9 @@ class BabelContext(CommonContext):
                     "player": player_id,
                     "flags": flags
                 }
-                if loc_dict not in getattr(self, "babel_private_hints", []):
-                    if not hasattr(self, "babel_private_hints"):
-                        self.babel_private_hints = []
+                if loc_dict not in self.babel_private_hints:
                     self.babel_private_hints.append(loc_dict)
+                    logger.info(f"[Babel] Data saved for Location {location_id}")
 
                 # 2. Build standard AP nodes for the console output
                 nodes = [
@@ -692,6 +593,7 @@ class BabelContext(CommonContext):
             # 4. Force Kivy UI update
             if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
                 self.ui.update_hints()
+                
     def resolve_raw_ap_node(self, node: dict) -> dict:
         """PHASE 1: Converts a raw AP node into the correct English string, ignoring numeric fallbacks."""
         resolved = node.copy()
@@ -789,14 +691,7 @@ class BabelContext(CommonContext):
         # =========================================================================
         raw_nodes = args.get("data", [])
         
-        # LOGGING STEP 1: What did the server actually send us?
-        #logger.info(f"\n[PIPELINE - 1. RAW INPUT]:\n{raw_nodes}")
-        
         resolved_nodes = [self.resolve_raw_ap_node(node) for node in raw_nodes]
-
-        # LOGGING STEP 2: Did our dictionary successfully translate the IDs to English?
-        resolved_string = "".join([n.get("text", "") for n in resolved_nodes])
-        #logger.info(f"[PIPELINE - 2. RESOLVED TEXT]:\n{resolved_string}")
 
         # =========================================================================
         # PHASE 2: Run the finalized English text through the scrambling engine
@@ -840,6 +735,7 @@ class BabelContext(CommonContext):
         logger.info(f"[Babel] Firing silent scout via primary connection: {location_ids}")
         # Use the primary connection instead of the background websocket
         await self.send_msgs([package])
+
 def launch_tower_of_babel_client(*args):
     async def main(parsed_args):
         ctx = BabelContext(parsed_args.connect, parsed_args.password)
