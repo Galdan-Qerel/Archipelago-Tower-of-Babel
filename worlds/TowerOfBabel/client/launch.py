@@ -11,6 +11,7 @@ import ast
 import re
 import difflib
 import ssl  # Added SSL module to handle certificate bypassing
+from typing import Any
 
 import ModuleUpdate
 ModuleUpdate.update()
@@ -22,7 +23,6 @@ from ..Game import game_name
 # Import your local manual items dictionary and invert it so we can look up Names by ID
 from ..items import ITEM_NAME_TO_ID
 babel_item_id_to_name = {v: k for k, v in ITEM_NAME_TO_ID.items()}
-
 from ..locations import LOCATION_NAME_TO_ID
 
 
@@ -110,14 +110,25 @@ def load_spoiler_log(spoiler_file: str):
 # COMMAND PROCESSOR
 # -----------------------------
 class BabelCommandProcessor(ClientCommandProcessor):
-    def _cmd_babel(self, slot_name: str = "", password: str = ""):
+    def _cmd_babel(self, *args: str):
         """Configure the Babel slot for unlocked data. Usage: /babel "<slot_name>" [password]"""
-        if not slot_name:
+        if not args:
             self.output("Please provide a slot name. Usage: /babel \"<slot_name>\" [password]")
             return
             
         if not self.ctx.server_address:
             self.output("Please connect the main client first using /connect")
+            return
+
+        # Archipelago splits arguments by space unless wrapped in quotes
+        if len(args) == 1:
+            slot_name = args[0]
+            password = ""
+        elif len(args) == 2:
+            slot_name = args[0]
+            password = args[1]
+        else:
+            self.output("[Babel Error] Too many arguments. If your slot name contains spaces, you MUST wrap it in quotes! Example: /babel \"My Slot Name\" my_password")
             return
 
         self.ctx.babel_slot = slot_name
@@ -129,7 +140,7 @@ class BabelCommandProcessor(ClientCommandProcessor):
         self.ctx.unlocked_chars.clear()
         self.ctx.babel_task = asyncio.create_task(self.ctx.connect_babel())
         self.output(f"Connecting background Babel slot to '{slot_name}'...")
-
+        
     def _cmd_unlocked(self):
         """View the symbols you have unlocked so far. (Usage: /unlocked)"""
         if not self.ctx.babel_slot:
@@ -188,14 +199,79 @@ class BabelCommandProcessor(ClientCommandProcessor):
             return
             
         if full_query in locations:
-            locs = locations[full_query]
-            if len(locs) > 10:
-                self.output(f"Found {len(locs)} locations for '{full_query}'. Only showing the first 10:")
-                locs = locs[:10]
-            for loc in locs:
-                self._output_babelhint_result(full_query, loc)
+            all_locs = locations[full_query]
+            
+            unfound_locs = []
+            found_locs = []
+            
+            # --- THE NEW FILTERING ENGINE ---
+            for loc in all_locs:
+                is_found = False
+                location_id = None
+                sender_id = None
+                
+                # 1. Parse "Location Name (Player Name)" safely using rsplit
+                if " (" in loc and loc.endswith(")"):
+                    parts = loc.rsplit(" (", 1)
+                    loc_name_clean = parts[0].strip()
+                    sender_name = parts[1][:-1].strip()
+                    
+                    # 2. Resolve the Sender's Player ID
+                    if hasattr(self.ctx, "player_names"):
+                        for p_id, p_name in self.ctx.player_names.items():
+                            if p_name == sender_name:
+                                sender_id = p_id
+                                break
+                    # Fallback for different AP versions
+                    if not sender_id and hasattr(self.ctx, "slot_info"):
+                        for s_id, s_data in self.ctx.slot_info.items():
+                            if getattr(s_data, "name", "") == sender_name:
+                                sender_id = s_id
+                                break
+                                
+                    # 3. Resolve the Location ID
+                    if sender_id and hasattr(self.ctx, "slot_info") and sender_id in self.ctx.slot_info:
+                        game_name = self.ctx.slot_info[sender_id].game
+                        if game_name in self.ctx.location_names:
+                            for l_id, l_name in self.ctx.location_names[game_name].items():
+                                if str(l_name).lower() == loc_name_clean.lower():
+                                    location_id = l_id
+                                    break
+                                    
+                    # 4. Check if we have received this item from this specific location & player
+                    if location_id and sender_id:
+                        for net_item in self.ctx.items_received:
+                            if net_item.location == location_id and net_item.player == sender_id:
+                                is_found = True
+                                break
+                
+                if is_found:
+                    found_locs.append(loc)
+                else:
+                    # ADDED: Store the resolved IDs alongside the raw string for the scouting phase
+                    unfound_locs.append((loc, location_id, sender_id))
+            
+            # --- OUTPUT AND UI UPDATES ---
+            self.output(f"[Babel] Status for '{full_query}': {len(found_locs)} Found, {len(unfound_locs)} Remaining.")
+            
+            if unfound_locs:
+                import asyncio
+                for loc_str, loc_id, target_slot in unfound_locs:
+                    if loc_id and target_slot == self.ctx.slot:
+                        # LOCAL: Fire normal silent scout using our own connection
+                        asyncio.create_task(self.ctx.scout_locations_silently([loc_id], target_slot))
+                    elif loc_id and target_slot:
+                        # REMOTE: Fire the ghost client to sneak in, get the flags, and feed our UI!
+                        asyncio.create_task(self.ghost_scout_location(loc_id, target_slot))
+                    else:
+                        # FALLBACK: Only print raw text if the ID literally could not be found
+                        self._output_babelhint_result(full_query, loc_str)
+            else:
+                self.output(f"All locations for '{item_name}' have already been found! No hints needed.")
+                
             return
             
+        # Closest matches logic remains unchanged
         filtered_items = [i for i in locations.keys() if i.endswith(f"({identifier})")]
         guesses = difflib.get_close_matches(full_query, filtered_items, n=5, cutoff=0.0)
         
@@ -205,90 +281,136 @@ class BabelCommandProcessor(ClientCommandProcessor):
                 self.output(f" - {g}")
         else:
             self.output(f"Could not find any items for '{identifier}' matching '{item_name}'.")
-
     def _output_babelhint_result(self, item_name: str, raw_location: str):
         nodes = [{"text": f"BabelHint for {item_name}:\nLocation: "}]
         nodes.extend(self.ctx.scramble_text_to_nodes(raw_location))
         
-        packet = {
+        package = {
             "cmd": "PrintJSON",
             "data": nodes,
             "type": "BabelHint"
         }
-        self.ctx.on_print_json(packet)
+        self.ctx.on_print_json(package)
     def _cmd_babelhintloc(self, *args: str):
         """
-        Scout a location using the local spoiler log with owner info.
+        Scout a location silently via the server.
         Usage: /babelhintloc [Location Name]
         """
         if not args:
             self.output("Usage: /babelhintloc [Location Name]")
             return
 
-        if not self.ctx.spoiler_log_path:
-            self.output("Please configure the spoiler log path first using /babelspoiler.")
-            return
-
         location_name = " ".join(args).strip().lower()
         
-        try:
-            locations, _, _ = load_spoiler_log(self.ctx.spoiler_log_path)
-        except Exception as e:
-            self.output(f"Error reading spoiler log: {e}")
-            return
-
-        found_item = None
-        found_owner = "Unknown"
+        location_id = None
+        target_slot = None
         
-        for item, loc_list in locations.items():
-            for loc in loc_list:
-                # loc format is usually "Location Name (Player Name)"
-                if location_name in loc.lower():
-                    found_item = item.split(' (')[0]
-                    # Extract the player name inside the parentheses
-                    if '(' in loc and ')' in loc:
-                        found_owner = loc.split('(')[-1].split(')')[0]
-                    break
-            if found_item:
+        # 1. Iterate through all connected slots to find the location
+        # self.ctx.slot_info is a dict of slot_id: slot_data
+        for slot_id, slot_data in self.ctx.slot_info.items():
+            game_name = slot_data.game
+            
+            # Check if this game exists in the NameLookupDict
+            if game_name in self.ctx.location_names:
+                # Direct indexing instead of .get()
+                game_locs = self.ctx.location_names[game_name]
+                
+                # Iterate through the ID:Name map for this game
+                for l_id, l_name in game_locs.items():
+                    if str(l_name).lower() == location_name:
+                        location_id = l_id
+                        target_slot = slot_id
+                        break
+            if location_id:
                 break
         
-        if not found_item:
-            self.output(f"[Babel Error] Could not find '{location_name}' in the spoiler log.")
+        if not location_id:
+            self.output(f"[Babel Error] Could not find '{location_name}' in any connected world.")
             return
-
-        # Update the UI with both the item and the owner
-        fake_loc_info = {
-            "item": f"{found_item} (Owner: {found_owner})", 
-            "location": location_name,
-            "player": self.ctx.slot,
-            "flags": 0
-        }
-        
-        if not hasattr(self.ctx, "babel_private_hints"):
-            self.ctx.babel_private_hints = []
-        
-        self.ctx.babel_private_hints.append(fake_loc_info)
-        
-        if hasattr(self.ctx, "ui") and self.ctx.ui and hasattr(self.ctx.ui, "update_hints"):
-            self.ctx.ui.update_hints()
             
-        # 1. Prepare the display string
-        display_text = f"{found_item} (Owner: {found_owner})"
-        
-        # 2. Scramble the text nodes just like a standard Babel hint
-        # We use 'magenta' to match your unlock notification color style
-        nodes = [{"text": f"BabelHint for {location_name}:\nLocation: "}]
-        nodes.extend(self.ctx.scramble_text_to_nodes(display_text, original_color="magenta"))
-        
-        # 3. Create a fake packet to trigger your existing UI handling
-        fake_packet = {
-            "cmd": "PrintJSON",
-            "data": nodes,
-            "type": "BabelHint" # This matches the type in your UI's hint handler
+
+        # 3. Fire the scout request with the exact packet structure requested
+        packet = {
+            "cmd": "LocationScouts",
+            "locations": [location_id],
+            "create_as_hint": 0, # Stays off the web tracker
         }
         
-        # 4. Inject directly into the UI via your existing print handler
-        self.ctx.on_print_json(fake_packet)
+        # 4. Wrap the async send_msgs call in a task so it fires from the synchronous command processor
+        import asyncio
+        asyncio.create_task(self.ctx.send_msgs([packet]))
+        
+        self.output(f"[Babel] Scouting '{location_name}' (Targeting slot {target_slot})...")
+    
+    async def ghost_scout_location(self, location_id: int, target_slot: int):
+        """Spawns a temporary silent websocket to scout a remote location, then injects the colored node."""
+        import websockets
+        import json
+        import uuid
+        import ssl
+        import asyncio
+
+        # Resolve the exact name of the slot we need to impersonate
+        target_name = self.ctx.player_names.get(target_slot, f"Player {target_slot}")
+        
+        url = self.ctx.server_address
+        if url and not (url.startswith("ws://") or url.startswith("wss://")):
+            url = f"ws://{url}"
+
+        ssl_context = None
+        if url.startswith("wss://"):
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+        try:
+            async with websockets.connect(url, ssl=ssl_context) as ws:
+                # 1. Authenticate silently as the TARGET player using the Tracker tag
+                connect_package = [{
+                    "cmd": "Connect",
+                    "password": self.ctx.password if self.ctx.password else "", 
+                    "name": target_name,
+                    "version": {"major": 0, "minor": 6, "build": 7, "class": "Version"},
+                    "tags": ["Tracker"],  # Prevents join/leave spam in the main chat
+                    "items_handling": 0,
+                    "game": self.ctx.slot_info[target_slot].game,
+                    "uuid": str(uuid.uuid4())
+                }]
+                await ws.send(json.dumps(connect_package))
+
+                # 2. Wait for connection, fire scout, catch response, and disconnect
+                async for message in ws:
+                    for package in json.loads(message):
+                        cmd = package.get("cmd")
+                        
+                        if cmd == "Connected":
+                            # We are in! Ask for the specific location flag silently.
+                            scout_pkg = [{
+                                "cmd": "LocationScouts",
+                                "locations": [location_id],
+                                "create_as_hint": 0
+                            }]
+                            await ws.send(json.dumps(scout_pkg))
+                            
+                        elif cmd == "LocationInfo":
+                            # INJECT: Add the target slot so the UI knows whose world this is!
+                            for loc_dict in package.get("locations", []):
+                                loc_dict["location_player"] = target_slot
+
+                            # We got the colored network item! Pipe it directly to the UI.
+                            if hasattr(self, "on_package"):
+                                self.on_package("LocationInfo", package)
+                            else:
+                                self.ctx.on_package("LocationInfo", package)
+                                
+                            return
+                            
+                        elif cmd == "ConnectionRefused":
+                            self.output(f"[Babel Error] Ghost scout failed. Slot '{target_name}' rejected the connection.")
+                            return
+                            
+        except Exception as e:
+            self.output(f"[Babel Error] Ghost scout crashed: {e}")
 # -----------------------------
 # CONTEXT MANAGER
 # -----------------------------
@@ -327,16 +449,16 @@ class BabelContext(CommonContext):
 
     def _output_babel_unlock(self, char_norm: str):
         nodes = [
-            {"text": "[Babel] ", "color": "yellow"},
+            {"text": "[Babel] ", "color": "green"},
             {"text": "Data Translated! You can now read the character: "},
             {"text": char_norm, "color": "magenta"}
         ]
-        packet = {
+        package = {
             "cmd": "PrintJSON",
             "data": nodes,
             "type": "BabelUnlock"
         }
-        self.on_print_json(packet)
+        self.on_print_json(package)
 
     def _evaluate_babel_logic(self):
         new_checks = []
@@ -364,12 +486,12 @@ class BabelContext(CommonContext):
         new_checks = [int(loc_id) for loc_id in self._evaluate_babel_logic()]
         
         if new_checks:
-            packet = [{"cmd": "LocationChecks", "locations": new_checks}]
+            package = [{"cmd": "LocationChecks", "locations": new_checks}]
             
-            # Log the raw packet so we can see exactly what IDs are being sent to the server!
-            logger.info(f"[Babel] Firing LocationChecks packet: {packet}")
+            # Log the raw package so we can see exactly what IDs are being sent to the server!
+            logger.info(f"[Babel] Firing LocationChecks package: {package}")
             
-            await self.babel_ws.send(json.dumps(packet))
+            await self.babel_ws.send(json.dumps(package))
             self.babel_checked_locations.update(new_checks)
             logger.info(f"[Babel] Auto-checked {len(new_checks)} location(s) on the background slot!")
 
@@ -389,7 +511,7 @@ class BabelContext(CommonContext):
                 self.babel_initialized = False
                 async with websockets.connect(url, ssl=ssl_context) as ws:
                     self.babel_ws = ws
-                    connect_packet = [{
+                    connect_package = [{
                         "cmd": "Connect",
                         "password": self.babel_password,
                         "name": self.babel_slot,
@@ -399,24 +521,24 @@ class BabelContext(CommonContext):
                         "game": game_name,
                         "uuid": str(uuid.uuid4())
                     }]
-                    await ws.send(json.dumps(connect_packet))
+                    await ws.send(json.dumps(connect_package))
                     
                     async for message in ws:
-                        for packet in json.loads(message):
-                            cmd = packet.get("cmd")
+                        for package in json.loads(message):
+                            cmd = package.get("cmd")
                             
                             if cmd == "Connected":
                                 logger.info(f"[Babel] Successfully connected to background Babel slot: {self.babel_slot}")
-                                self.babel_checked_locations = set(packet.get("checked_locations", []))
+                                self.babel_checked_locations = set(package.get("checked_locations", []))
                                 await self.check_babel_locations()
                                 
                             elif cmd == "RoomUpdate":
-                                if "checked_locations" in packet:
-                                    self.babel_checked_locations.update(packet["checked_locations"])
+                                if "checked_locations" in package:
+                                    self.babel_checked_locations.update(package["checked_locations"])
                             
                             elif cmd == "ReceivedItems":
-                                for item in packet.get("items", []):
-                                    # Raw background websocket packets are dicts, not NetworkItems!
+                                for item in package.get("items", []):
+                                    # Raw background websocket packages are dicts, not NetworkItems!
                                     item_id = item.get("item", 0)
                                     
                                     # EXCLUSIVELY look up items belonging to Tower of Babel
@@ -439,7 +561,7 @@ class BabelContext(CommonContext):
                                 if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
                                     self.ui.update_hints()
                             elif cmd == "ConnectionRefused":
-                                logger.error(f"[Babel] Connection refused: {', '.join(packet.get('errors', []))}")
+                                logger.error(f"[Babel] Connection refused: {', '.join(package.get('errors', []))}")
                                 return
                                 
             except asyncio.CancelledError:
@@ -488,38 +610,86 @@ class BabelContext(CommonContext):
         nodes = []
         for char in text:
             if char.isspace() or self.normalize_char(char) in self.unlocked_chars:
-                nodes.append({"type": "color", "color": original_color or "magenta", "text": char})
+                # Use the extracted item/location color, defaulting to white for standard text
+                nodes.append({"type": "color", "color": original_color or "white", "text": char})
             else:
-                # Removed string.punctuation to prevent Kivy markup crashes (no accidental '[' or ']')
                 scrambled_char = random.choice(string.ascii_letters + string.digits)
-                nodes.append({"type": "color", "color": "cyan", "text": scrambled_char})
+                # Unrelated color for scrambled text
+                nodes.append({"type": "color", "color": "salmon", "text": scrambled_char})
         return nodes
     
-    def on_packet(self, packet: dict):
-        if packet.get("cmd") != "PrintJSON": # Filter out noise
-            logger.info(f"[Babel DEBUG] Received packet cmd: {packet.get('cmd')}")
-        # Allow the original client to process the packet first
-        super().on_packet(packet)
+    def on_package(self, cmd: str, args: dict[str, Any]) -> None:
+        logger.info(f"[Babel DEBUG] Received package cmd: {cmd}")
         
-        # Intercept the LocationInfo packet coming from the PRIMARY server
-        if packet.get("cmd") == "LocationInfo":
+        # Allow the original client to process the package first
+        super().on_package(cmd, args)
+        
+        # Intercept the LocationInfo package coming from the PRIMARY server
+        # Intercept the LocationInfo package coming from the PRIMARY server
+        if cmd == "LocationInfo":
             logger.info("[Babel] Intercepted LocationInfo from primary server!")
             
             if not hasattr(self, "babel_private_hints"):
                 self.babel_private_hints = []
                 
-            for loc in packet.get("locations", []):
+            for loc in args.get("locations", []):
+                # ADDED: Output the raw NetworkItem to the console for debugging
+                logger.info(f"[Babel DEBUG] Raw NetworkItem: {loc}")
+                
+                # Multiworld Fix: Safely handle BOTH dicts (Ghost Client) and objects (Main Client)
+                if isinstance(loc, dict):
+                    item_id = loc.get("item", 0)
+                    location_id = loc.get("location", 0)
+                    player_id = loc.get("player", 0)
+                    flags = loc.get("flags", 0)
+                    # Get the injected owner, or fallback to our own slot
+                    location_player = loc.get("location_player", self.slot)
+                else:
+                    item_id = loc.item
+                    location_id = loc.location
+                    player_id = loc.player
+                    flags = loc.flags
+                    # If it's a native object from the main client, it's always our own world
+                    location_player = self.slot
+                
+                # 1. Save to your internal dictionary for the Kivy UI Tab
                 loc_dict = {
-                    "item": loc.get("item"),
-                    "location": loc.get("location"),
-                    "player": loc.get("player"),
-                    "flags": loc.get("flags")
+                    "item": item_id,
+                    "location": location_id,
+                    "player": player_id,
+                    "flags": flags
                 }
-                if loc_dict not in self.babel_private_hints:
+                if loc_dict not in getattr(self, "babel_private_hints", []):
+                    if not hasattr(self, "babel_private_hints"):
+                        self.babel_private_hints = []
                     self.babel_private_hints.append(loc_dict)
-                    logger.info(f"[Babel] Data saved for Location {loc_dict['location']}")
+
+                # 2. Build standard AP nodes for the console output
+                nodes = [
+                    {"text": "[Babel Scout] ", "color": "green"},
+                    # Render the world owner (e.g., "GaldanFFX's ")
+                    {"type": "player_id", "player": location_player, "text": str(location_player)},
+                    {"text": "'s "},
+                    # Render the location (e.g., "Pokedex - Kadabra")
+                    {"type": "location_id", "location": location_id, "text": str(location_id)},
+                    {"text": " contains "},
+                    # Render the item (e.g., "Aerodactyl Tile")
+                    {"type": "item_id", "item": item_id, "flags": flags, "player": player_id, "text": str(item_id)},
+                    {"text": " belonging to "},
+                    # Render the receiver (e.g., "GaldanFFX")
+                    {"type": "player_id", "player": player_id, "text": str(player_id)},
+                    {"text": ".\n"}
+                ]
+                
+                # 3. Fire it through your PrintJSON pipeline
+                package = {
+                    "cmd": "PrintJSON",
+                    "data": nodes,
+                    "type": "BabelHint"
+                }
+                self.on_print_json(package)
             
-            # Force UI update
+            # 4. Force Kivy UI update
             if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
                 self.ui.update_hints()
     def resolve_raw_ap_node(self, node: dict) -> dict:
@@ -527,14 +697,20 @@ class BabelContext(CommonContext):
         resolved = node.copy()
         node_type = resolved.get("type")
         
-        # Multiworld Fix: Find out which player owns this node and fetch their specific game from slot_info!
-        node_player = int(resolved.get("player", self.slot))
+        # Multiworld Fix: Safely attempt to get the numeric player slot
+        try:
+            node_player = int(resolved.get("player", self.slot))
+        except (ValueError, TypeError):
+            # If the server sends a name string instead of a slot ID, fallback safely
+            node_player = self.slot
+
         game_name = ""
         if hasattr(self, "slot_info") and node_player in self.slot_info:
             game_name = self.slot_info[node_player].game
 
-        # 1. Force Item IDs to translate into English text using the correct game's dictionary
+        # 1. Force Item IDs to translate into English text
         if node_type in ("item_id", "item_name"):
+            # ... [Keep the rest of your existing function below this] ...
             try:
                 item_id = int(resolved.get("item", resolved.get("text", 0)))
                 if hasattr(self, '_orig_item_get_name'):
@@ -546,7 +722,21 @@ class BabelContext(CommonContext):
             except ValueError:
                 resolved["text"] = str(resolved.get("text", ""))
                 
-        # 2. Force Location IDs to translate into English text using the correct game's dictionary
+            # --- COLOR INJECTION BASED ON FLAGS ---
+            flags = int(resolved.get("flags", 0))
+            
+            if flags == 0:
+                resolved["color"] = "cyan"     # Nothing special / Filler
+            elif flags & 0b001: 
+                resolved["color"] = "plum"  # Logical advancement / Progression
+            elif flags & 0b010:
+                resolved["color"] = "blue"     # Useful
+            elif flags & 0b100:
+                resolved["color"] = "red"      # Trap
+            else:
+                resolved["color"] = "cyan"     # Fallback
+                
+        # 2. Force Location IDs to translate into English text
         elif node_type in ("location_id", "location_name"):
             try:
                 loc_id = int(resolved.get("location", resolved.get("text", 0)))
@@ -559,10 +749,27 @@ class BabelContext(CommonContext):
             except ValueError:
                 resolved["text"] = str(resolved.get("text", ""))
                 
-        # 3. For Player nodes, leave them completely untouched.
+            # Native AP locations are typically green
+            if "color" not in resolved:
+                resolved["color"] = "green"
+                
+        # 3. Resolve Player nodes to text so they can be safely scrambled
         elif node_type in ("player_id", "player_name"):
-            pass
+            player_val = resolved.get("player", resolved.get("text", ""))
             
+            try:
+                # If it's a numeric ID, look up the name in the client's dictionary
+                player_num = int(player_val)
+                resolved["text"] = self.player_names.get(player_num, f"Player {player_num}")
+            except (ValueError, TypeError):
+                # If it's already a string (like 'DanB_DS'), just use it directly
+                resolved["text"] = str(player_val)
+                
+            # Downgrade to standard text and color it yellow so Kivy handles it safely
+            resolved["type"] = "text"
+            resolved["color"] = "yellow"
+        elif node_type == "player_name":
+            pass # player_name nodes are already string-safe natively
         # 4. Standard text strings (like " sent " or " to ")
         else:
             resolved["text"] = str(resolved.get("text", ""))
@@ -598,7 +805,7 @@ class BabelContext(CommonContext):
         
         if msg_type == "Chat":
             # For chat, collapse all resolved nodes into one string to find the colon
-            full_text = "".join([n["text"] for n in resolved_nodes])
+            full_text = "".join([n.get("text", "") for n in resolved_nodes])
             name_color = next((n.get("color") for n in resolved_nodes if n.get("color")), None)
             
             name_part, sep, msg_part = full_text.partition(": ")
@@ -614,22 +821,16 @@ class BabelContext(CommonContext):
         else:
             # For Hints, ItemSends, etc., scramble the resolved text node-by-node
             for node in resolved_nodes:
-                # Protect Archipelago's native player nodes so you know WHO is doing the action
-                if node.get("type") in ("player_id", "player_name"):
-                    new_data.append(node)
-                else:
-                    new_data.extend(self.scramble_text_to_nodes(node["text"], node.get("color")))
-                
-        # LOGGING STEP 3: Did the scrambler respect our unlocked characters?
-        scrambled_string = "".join([str(n.get("text", "")) for n in new_data])
-        #logger.info(f"[PIPELINE - 3. SCRAMBLED OUTPUT]:\n{scrambled_string}\n")
+                # Because player_id nodes were converted to "text" in Phase 1, 
+                # they will now be fully scrambled here alongside items and locations!
+                new_data.extend(self.scramble_text_to_nodes(node.get("text", ""), node.get("color")))
                 
         args["data"] = new_data
         super().on_print_json(args)
     
     async def scout_locations_silently(self, location_ids: list[int], target_slot: int):
-        """Sends a private scout packet over the primary connection."""
-        packet = {
+        """Sends a private scout package over the primary connection."""
+        package = {
             "cmd": "LocationScouts",
             "locations": location_ids,
             "create_as_hint": 0,
@@ -638,7 +839,7 @@ class BabelContext(CommonContext):
         
         logger.info(f"[Babel] Firing silent scout via primary connection: {location_ids}")
         # Use the primary connection instead of the background websocket
-        await self.send_msgs([packet])
+        await self.send_msgs([package])
 def launch_tower_of_babel_client(*args):
     async def main(parsed_args):
         ctx = BabelContext(parsed_args.connect, parsed_args.password)
