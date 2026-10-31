@@ -1,152 +1,225 @@
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from Options import Choice, OptionGroup, PerGameCommonOptions, Range, Toggle
+from Options import Choice, DefaultOnToggle, OptionGroup, OptionList, PerGameCommonOptions, Range, Toggle
 
-# In this file, we define the options the player can pick.
-# The most common types of options are Toggle, Range and Choice.
-
-# Options will be in the game's template yaml.
-# They will be represented by checkboxes, sliders etc. on the game's options page on the website.
-# (Note: Options can also be made invisible from either of these places by overriding Option.visibility.
-#  APQuest doesn't have an example of this, but this can be used for secret / hidden / advanced options.)
-
-# For further reading on options, you can also read the Options API Document:
-# https://github.com/ArchipelagoMW/Archipelago/blob/main/docs/options%20api.md
+if TYPE_CHECKING:
+    from BaseClasses import PlandoOptions
+    from worlds.AutoWorld import World
 
 
-# The first type of Option we'll discuss is the Toggle.
-# A toggle is an option that can either be on or off. This will be represented by a checkbox on the website.
-# The default for a toggle is "off".
-# If you want a toggle to be on by default, you can use the "DefaultOnToggle" class instead of the "Toggle" class.
-class HardMode(Toggle):
+class Goal(Choice):
     """
-    In hard mode, the basic enemy and the final boss will have more health.
-    The Health Upgrades become progression, as they are now required to beat the final boss.
+    Determines the victory condition for Tower of Babel.
+    - Full Language Unlock: Unlock all enabled character sets (Letters, Numbers, and Symbols).
+    - Mysteries of the Cosmos: Collect the required number of 'Clue of the Cosmos' items.
     """
 
-    # The docstring of an option is used as the description on the website and in the template yaml.
+    display_name = "Goal"
 
-    # You'll also want to set a display name, which will determine what the option is called on the website.
-    display_name = "Hard Mode"
+    option_full_language_unlock = 0
+    option_mysteries_of_the_cosmos = 1
+
+    default = option_full_language_unlock
 
 
-class Hammer(Toggle):
+class IncludeLetters(DefaultOnToggle):
     """
-    Adds another item to the itempool: The Hammer.
-    The top middle chest will now be locked behind a breakable wall, requiring the Hammer.
-    """
-
-    display_name = "Hammer"
-
-
-class ExtraStartingChest(Toggle):
-    """
-    Adds an extra chest in the bottom left, making room for an extra Confetti Cannon.
+    Include the 26 English alphabet letters (A-Z) in the item and location pools.
     """
 
-    display_name = "Extra Starting Chest"
+    display_name = "Include Letters"
 
 
-class TrapChance(Range):
+class IncludeNumbers(DefaultOnToggle):
     """
-    Percentage chance that any given Confetti Cannon will be replaced by a Math Trap.
+    Include the 10 numeric digits (0-9) in the item and location pools.
     """
 
-    display_name = "Trap Chance"
+    display_name = "Include Numbers"
+
+
+class IncludeSymbols(DefaultOnToggle):
+    """
+    Include the 29 punctuation and special symbols in the item and location pools.
+    """
+
+    display_name = "Include Symbols"
+
+
+class CluesInPool(Range):
+    """
+    Total number of 'Clue of the Cosmos' items and corresponding 'Collect X Clues of the Cosmos' locations
+    added to the multiworld pool when the Goal is set to 'Mysteries of the Cosmos' (or when Clues are enabled).
+    """
+
+    display_name = "Clues in Pool"
+
+    range_start = 1
+    range_end = 200
+    default = 100
+
+
+class CluesToGoal(Range):
+    """
+    Number of 'Clue of the Cosmos' items required to achieve victory when the Goal is 'Mysteries of the Cosmos'.
+    If set higher than Clues in Pool, it will be clamped to Clues in Pool.
+    """
+
+    display_name = "Clues to Goal"
+
+    range_start = 1
+    range_end = 200
+    default = 100
+
+
+class MilestoneInterval(Range):
+    """
+    In 'Mysteries of the Cosmos' mode, every X 'Clue of the Cosmos' items found (up to Clues in Pool)
+    unlocks a Milestone Cache that checks additional locations. Set to 0 to disable Milestone Caches.
+    """
+
+    display_name = "Milestone Interval"
+
+    range_start = 0
+    range_end = 200
+    default = 10
+
+
+class MilestoneCacheSize(Range):
+    """
+    Number of additional locations checked (items sent) at each Milestone Interval in 'Mysteries of the Cosmos' mode.
+    Set to 0 to disable Milestone Caches.
+    """
+
+    display_name = "Milestone Cache Size"
+
+    range_start = 0
+    range_end = 50
+    default = 2
+
+
+class PlayerList(OptionList):
+    """
+    List of player names in the multiworld to generate '<Player> Draw' and '<Player> Discard' items and locations for.
+    Example: ["Player1", "Player2"]
+    """
+
+    display_name = "Player List"
+    default = []
+
+    def verify(self, world: type["World"], player_name: str, plando_options: "PlandoOptions") -> None:
+        super().verify(world, player_name, plando_options)
+        cleaned: list[str] = []
+        for entry in self.value:
+            name = str(entry).strip()
+            if name and name not in cleaned:
+                cleaned.append(name)
+        self.value = cleaned
+        if cleaned and hasattr(world, "register_dynamic_player_cards"):
+            world.register_dynamic_player_cards(cleaned)
+
+
+class StartingHand(Range):
+    """
+    Starting hand size for each player listed in Player List.
+    Does not create items or locations; used by the client UI to calculate each player's current hand size
+    (Starting Hand + Draws Found - Discards Found).
+    """
+
+    display_name = "Starting Hand"
 
     range_start = 0
     range_end = 100
-    default = 0
+    default = 5
 
 
-class StartWithOneConfettiCannon(Toggle):
+class NumDiscards(Range):
     """
-    Start with a confetti cannon already in your inventory.
-    Why? Because you deserve it. You get to celebrate yourself without doing any work first.
-    """
-
-    display_name = "Start With One Confetti Cannon"
-
-
-# A Range is a numeric option with a min and max value. This will be represented by a slider on the website.
-class ConfettiExplosiveness(Range):
-    """
-    How much confetti each use of a confetti cannon will fire.
+    Number of '<Player> Discard' items and matching '<Player> Discard 1..N' locations added to the pool
+    for each player in Player List.
     """
 
-    display_name = "Confetti Explosiveness"
+    display_name = "Number of Discards"
 
     range_start = 0
-    range_end = 10
-
-    # Range options must define an explicit default value.
-    default = 3
+    range_end = 100
+    default = 5
 
 
-# A Choice is an option with multiple discrete choices. This will be represented by a dropdown on the website.
-class PlayerSprite(Choice):
+class NumDraws(Range):
     """
-    The sprite that the player will have.
+    Number of '<Player> Draw' items and matching '<Player> Draw 1..N' locations added to the pool
+    for each player in Player List.
     """
 
-    display_name = "Player Sprite"
+    display_name = "Number of Draws"
 
-    option_human = 0
-    option_duck = 1
-    option_horse = 2
-    option_cat = 3
-
-    # Choice options must define an explicit default value.
-    default = option_human
-
-    # For choices, you can also define aliases.
-    # For example, we could make it so "player_sprite: kitty" resolves to "player_sprite: cat" like this:
-    alias_kitty = option_cat
+    range_start = 0
+    range_end = 100
+    default = 5
 
 
-# We must now define a dataclass inheriting from PerGameCommonOptions that we put all our options in.
-# This is in the format "option_name_in_snake_case: OptionClassName".
+# ==========================================
+# UPCOMING FEATURES (Hint Cost Reduction)
+# ==========================================
+# class HintCostReduction(Toggle):
+#     """
+#     When enabled, finding any of the characters in '!HINT' (Symbol !, Letter H, Letter I, Letter N, Letter T)
+#     reduces the native hint cost by a flat amount per character unlocked.
+#     """
+#
+#     display_name = "Hint Cost Reduction"
+#
+#
+# class HintCostReductionAmount(Range):
+#     """
+#     Flat amount (percentage points) by which the native hint cost is reduced for each '!HINT' character unlocked
+#     when Hint Cost Reduction is enabled.
+#     """
+#
+#     display_name = "Hint Cost Reduction Amount"
+#
+#     range_start = 1
+#     range_end = 100
+#     default = 2
+
+
 @dataclass
-class APQuestOptions(PerGameCommonOptions):
-    hard_mode: HardMode
-    hammer: Hammer
-    extra_starting_chest: ExtraStartingChest
-    start_with_one_confetti_cannon: StartWithOneConfettiCannon
-    trap_chance: TrapChance
-    confetti_explosiveness: ConfettiExplosiveness
-    player_sprite: PlayerSprite
+class TowerOfBabelOptions(PerGameCommonOptions):
+    goal: Goal
+    include_letters: IncludeLetters
+    include_numbers: IncludeNumbers
+    include_symbols: IncludeSymbols
+    clues_in_pool: CluesInPool
+    clues_to_goal: CluesToGoal
+    milestone_interval: MilestoneInterval
+    milestone_cache_size: MilestoneCacheSize
+    player_list: PlayerList
+    starting_hand: StartingHand
+    num_discards: NumDiscards
+    num_draws: NumDraws
+    # Upcoming features:
+    # hint_cost_reduction: HintCostReduction
+    # hint_cost_reduction_amount: HintCostReductionAmount
 
 
-# If we want to group our options by similar type, we can do so as well. This looks nice on the website.
 option_groups = [
     OptionGroup(
-        "Gameplay Options",
-        [HardMode, Hammer, ExtraStartingChest, StartWithOneConfettiCannon, TrapChance],
+        "Goal & Clues",
+        [Goal, CluesInPool, CluesToGoal, MilestoneInterval, MilestoneCacheSize],
     ),
     OptionGroup(
-        "Aesthetic Options",
-        [ConfettiExplosiveness, PlayerSprite],
+        "Character Pools",
+        [IncludeLetters, IncludeNumbers, IncludeSymbols],
     ),
+    OptionGroup(
+        "Deck & Hand Options",
+        [PlayerList, StartingHand, NumDiscards, NumDraws],
+    ),
+    # Upcoming features:
+    # OptionGroup(
+    #     "Hint Options",
+    #     [HintCostReduction, HintCostReductionAmount],
+    # ),
 ]
-
-# Finally, we can define some option presets if we want the player to be able to quickly choose a specific "mode".
-option_presets = {
-    "boring": {
-        "hard_mode": False,
-        "hammer": False,
-        "extra_starting_chest": False,
-        "start_with_one_confetti_cannon": False,
-        "trap_chance": 0,
-        "confetti_explosiveness": ConfettiExplosiveness.range_start,
-        "player_sprite": PlayerSprite.option_human,
-    },
-    "the true way to play": {
-        "hard_mode": True,
-        "hammer": True,
-        "extra_starting_chest": True,
-        "start_with_one_confetti_cannon": True,
-        "trap_chance": 50,
-        "confetti_explosiveness": ConfettiExplosiveness.range_end,
-        "player_sprite": PlayerSprite.option_duck,
-    },
-}

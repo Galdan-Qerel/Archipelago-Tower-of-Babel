@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from BaseClasses import Entrance, Region
+from BaseClasses import Region
 
 if TYPE_CHECKING:
-    from .world import APQuestWorld
+    from .world import TowerOfBabelWorld
 
 
 def create_and_connect_regions(world: TowerOfBabelWorld) -> None:

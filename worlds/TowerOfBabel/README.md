@@ -70,10 +70,8 @@ Searches the configured spoiler log for an item belonging to your connected main
 * **Pokemon Crystal Unown Hunt intergration:** Instead of using the Babel manual, a /johto command would allow the use of unown dex to fill in for letters only mode
 * **Final Fantasy X integration"** Letters only mode that goes off your found Al Bhed ciphers (and might force a static Al Bhed cipher)
 * **Cipher Mode Toggle:** An optional "Codebreaker" mode that replaces the pure-random text scrambling with a persistent substitution cipher. This would allow dedicated players to manually decipher the language using context clues before they find the actual items.
-* **Native Hint Integration:** Bypassing the need for a local spoiler log by hooking the scrambling engine directly into Archipelago's native `!hint` system.
+* **Native Hint Integration:** Bypassing the need for a local spoiler log by hooking the scrambling engine directly into Archipelago's native `!hint` system. REQUIRES CUSTOM SERVER
 * **Visual Tracker GUI:** Adding a dedicated visual grid to the Archipelago launcher window that displays the alphabet and illuminates symbols as they are unlocked, replacing the need to type `/unlocked`.
-* **Better McGuffin Support:** Only lists 10, does not indicate if found or not and does not filter out found
 * **Hint tab integration:** Get babel hints to show in the hint tab
 * **Automatic native hint cost reduction:** If the player finds any of !HINT, reduce the native hint cost by a flat amount
-* **Enhance coloration:** Maintain native importance coloration and keep an unrelated color for scrambled text
 * **Improve babel hint output:** Do not scramble "Babel Hint" or the hinter's slot name (intentionally keep the finder's name scrambled)

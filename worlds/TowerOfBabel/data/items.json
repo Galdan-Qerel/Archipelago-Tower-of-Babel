@@ -328,5 +328,15 @@
     "name": "Victory",
     "classification": "progression",
     "tags": []
+  },
+  {
+    "name": "Clue of the Cosmos",
+    "classification": "progression",
+    "tags": ["Clues"]
+  },
+  {
+    "name": "Filler",
+    "classification": "filler",
+    "tags": ["Filler"]
   }
 ]

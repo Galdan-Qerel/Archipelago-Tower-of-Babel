@@ -1,0 +1,245 @@
+# Q. What is this file?
+# A. This file contains options which allow you to configure your multiworld experience while allowing
+#    others to play how they want as well.
+#
+# Q. How do I use it?
+# A. The options in this file are weighted. This means the higher number you assign to a value, the
+#    more chances you have for that option to be chosen. For example, an option like this:
+#
+#    map_shuffle:
+#      on: 5
+#      off: 15
+#
+#    Means you have 5 chances for map shuffle to occur, and 15 chances for map shuffle to be turned
+#    off.
+#
+# Q. I've never seen a file like this before. What characters am I allowed to use?
+# A. This is a .yaml file. You are allowed to use most characters.
+#    To test if your yaml is valid or not, you can use this website:
+#        http://www.yamllint.com/
+#    You can also verify that your Archipelago options are valid at this site:
+#        https://archipelago.gg/check
+
+# Your name in-game, limited to 16 characters.
+#     {player} will be replaced with the player's slot number.
+#     {PLAYER} will be replaced with the player's slot number, if that slot number is greater than 1.
+#     {number} will be replaced with the counter value of the name.
+#     {NUMBER} will be replaced with the counter value of the name, if the counter value is greater than 1.
+name: Babel
+
+# Used to describe your yaml. Useful if you have multiple files.
+description: Default Tower Of Babel AP Template
+
+game: Tower Of Babel AP
+requires:
+  version: 0.6.7 # Version of Archipelago required for this yaml to work as expected.
+
+Tower Of Babel AP:
+  ################
+  # Game Options #
+  ################
+  progression_balancing:
+    # A system that can move progression earlier, to try and prevent the player from getting stuck and bored early.
+    # 
+    # A lower setting means more getting stuck. A higher setting means less getting stuck.
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 0
+    # Maximum value is 99
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-0-99: 0 # random value between 0 and 99
+    disabled: 0 # equivalent to 0
+    normal: 50 # equivalent to 50
+    extreme: 0 # equivalent to 99
+
+  accessibility:
+    # Set rules for reachability of your items/locations.
+    # 
+    # **Full:** ensure everything can be reached and acquired.
+    # 
+    # **Minimal:** ensure what is needed to reach your goal can be acquired.
+    full: 50
+    minimal: 0
+
+  ################
+  # Goal & Clues #
+  ################
+  goal:
+    # Determines the victory condition for Tower of Babel.
+    # - Full Language Unlock: Unlock all enabled character sets (Letters, Numbers, and Symbols).
+    # - Mysteries of the Cosmos: Collect the required number of 'Clue of the Cosmos' items.
+    full_language_unlock: 0
+    mysteries_of_the_cosmos: 50
+
+  clues_in_pool:
+    # Total number of 'Clue of the Cosmos' items and corresponding 'Collect X Clues of the Cosmos' locations
+    # added to the multiworld pool when the Goal is set to 'Mysteries of the Cosmos' (or when Clues are enabled).
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 1
+    # Maximum value is 200
+    100: 50
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-1-200: 0 # random value between 1 and 200
+
+  clues_to_goal:
+    # Number of 'Clue of the Cosmos' items required to achieve victory when the Goal is 'Mysteries of the Cosmos'.
+    # If set higher than Clues in Pool, it will be clamped to Clues in Pool.
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 1
+    # Maximum value is 200
+    100: 50
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-1-200: 0 # random value between 1 and 200
+
+  milestone_interval:
+    # In 'Mysteries of the Cosmos' mode, every X 'Clue of the Cosmos' items found (up to Clues in Pool)
+    # unlocks a Milestone Cache that checks additional locations. Set to 0 to disable Milestone Caches.
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 0
+    # Maximum value is 200
+    10: 50
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-0-200: 0 # random value between 0 and 200
+
+  milestone_cache_size:
+    # Number of additional locations checked (items sent) at each Milestone Interval in 'Mysteries of the Cosmos' mode.
+    # Set to 0 to disable Milestone Caches.
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 0
+    # Maximum value is 50
+    2: 50
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-0-50: 0 # random value between 0 and 50
+
+  ###################
+  # Character Pools #
+  ###################
+  include_letters:
+    # Include the 26 English alphabet letters (A-Z) in the item and location pools.
+    'false': 0
+    'true': 50
+
+  include_numbers:
+    # Include the 10 numeric digits (0-9) in the item and location pools.
+    'false': 0
+    'true': 50
+
+  include_symbols:
+    # Include the 29 punctuation and special symbols in the item and location pools.
+    'false': 0
+    'true': 50
+
+  #######################
+  # Deck & Hand Options #
+  #######################
+  player_list:
+    # List of player names in the multiworld to generate '<Player> Draw' and '<Player> Discard' items and locations for.
+    # Example: ["Player1", "Player2"]
+    - Prof
+    - Chrono
+    - Garnet
+    - Miro
+    - Caesius
+    - Galdan
+    - Noca
+    - Useless
+    - Joane
+    - Syn
+    - Bantha
+    - Orange
+    - Pitchouli
+    - Plushielle
+    - Proxielle
+
+  starting_hand:
+    # Starting hand size for each player listed in Player List.
+    # Does not create items or locations; used by the client UI to calculate each player's current hand size
+    # (Starting Hand + Draws Found - Discards Found).
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 0
+    # Maximum value is 100
+    5: 50
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-0-100: 0 # random value between 0 and 100
+
+  num_discards:
+    # Number of '<Player> Discard' items and matching '<Player> Discard 1..N' locations added to the pool
+    # for each player in Player List.
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 0
+    # Maximum value is 100
+    5: 50
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-0-100: 0 # random value between 0 and 100
+
+  num_draws:
+    # Number of '<Player> Draw' items and matching '<Player> Draw 1..N' locations added to the pool
+    # for each player in Player List.
+    #
+    # You can define additional values between the minimum and maximum values.
+    # Minimum value is 0
+    # Maximum value is 100
+    5: 50
+    random: 0
+    random-low: 0 # random value weighted towards lower values
+    random-high: 0 # random value weighted towards higher values
+    random-range-0-100: 0 # random value between 0 and 100
+
+  ###########################
+  # Item & Location Options #
+  ###########################
+  local_items:
+    # Forces these items to be in their native world.
+    []
+
+  non_local_items:
+    # Forces these items to be outside their native world.
+    []
+
+  start_inventory:
+    # Start with the specified amount of these items. Example: {Bomb: 1, Arrow: 3}
+    {}
+
+  start_hints:
+    # Start with these item's locations prefilled into the ``!hint`` command.
+    []
+
+  start_location_hints:
+    # Start with these locations and their item prefilled into the ``!hint`` command.
+    []
+
+  exclude_locations:
+    # Prevent these locations from having an important item.
+    []
+
+  priority_locations:
+    # Prevent these locations from having an unimportant item.
+    []
+
+  item_links:
+    # Share part of your item pool with other players.
+    []
+
+  plando_items:
+    # Generic items plando.
+    []
