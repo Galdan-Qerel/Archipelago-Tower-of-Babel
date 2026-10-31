@@ -10,6 +10,7 @@ import os
 import ast
 import difflib
 import ssl  # Added SSL module to handle certificate bypassing
+import urllib.parse
 from typing import Any
 
 import ModuleUpdate
@@ -110,19 +111,62 @@ class BabelCommandProcessor(ClientCommandProcessor):
             self.output("Please connect the main client first using /connect")
             return
 
+        default_password = (
+            self.ctx.password
+            if (self.ctx.password and self.ctx.password != "None")
+            else (self.ctx.babel_password or "")
+        )
+
+        known_slots: dict[str, str] = {}
+        if hasattr(self.ctx, "slot_info") and self.ctx.slot_info:
+            for slot_data in self.ctx.slot_info.values():
+                s_name = getattr(slot_data, "name", None)
+                if s_name:
+                    known_slots[s_name.lower()] = s_name
+
+        explicit_password: str | None = None
+
         # Archipelago splits arguments by space unless wrapped in quotes
         if len(args) == 1:
-            slot_name = args[0]
-            password = ""
-        elif len(args) == 2:
-            slot_name = args[0]
-            password = args[1]
+            slot_name = known_slots.get(args[0].lower(), args[0])
+            password = default_password
         else:
-            self.output("[Babel Error] Too many arguments. If your slot name contains spaces, you MUST wrap it in quotes! Example: /babel \"My Slot Name\" my_password")
-            return
+            joined_all = " ".join(args)
+            if joined_all.lower() in known_slots and args[0].lower() not in known_slots:
+                slot_name = known_slots[joined_all.lower()]
+                password = default_password
+            elif len(args) == 2:
+                slot_name = known_slots.get(args[0].lower(), args[0])
+                explicit_password = args[1]
+                password = explicit_password
+            else:
+                matched_prefix = False
+                for i in range(len(args) - 1, 0, -1):
+                    prefix = " ".join(args[:i])
+                    if prefix.lower() in known_slots:
+                        slot_name = known_slots[prefix.lower()]
+                        explicit_password = " ".join(args[i:])
+                        password = explicit_password
+                        matched_prefix = True
+                        break
+                if not matched_prefix:
+                    self.output(
+                        "[Babel Error] Too many arguments. If your slot name contains spaces, "
+                        "you MUST wrap it in quotes! Example: /babel \"My Slot Name\" my_password"
+                    )
+                    return
 
         self.ctx.babel_slot = slot_name
         self.ctx.babel_password = password
+
+        # If the user explicitly supplied the room password here while the main client is
+        # waiting at the password prompt, fulfill the main client's password prompt too.
+        if explicit_password is not None:
+            if not self.ctx.password or self.ctx.password == "None":
+                self.ctx.password = explicit_password
+                if self.ctx.input_requests > 0:
+                    self.ctx.input_requests -= 1
+                    self.ctx.input_queue.put_nowait(explicit_password)
         
         if self.ctx.babel_task:
             self.ctx.babel_task.cancel()
@@ -386,7 +430,7 @@ class BabelContext(CommonContext):
         
         self.babel_checked_locations = set() 
         self.babel_slot = None
-        self.babel_password = ""
+        self.babel_password = password if (password and password != "None") else ""
         self.babel_task = None
         self.babel_ws = None
         self.spoiler_log_path = None  
@@ -403,10 +447,25 @@ class BabelContext(CommonContext):
             self.location_names.lookup_in_game = self._scrambled_loc_name
 
     async def server_auth(self, password_requested: bool = False):
+        if password_requested and self.password == "None":
+            self.password = None
         if password_requested and not self.password:
             await super().server_auth(password_requested)
+        if self.password and self.password != "None" and not self.babel_password:
+            self.babel_password = self.password
         await self.get_username()
         await self.send_connect()
+
+    async def _babel_console_input(self) -> str:
+        if self.ui:
+            self.ui.focus_textinput()
+        self.input_requests += 1
+        try:
+            return await self.input_queue.get()
+        except asyncio.CancelledError:
+            if self.input_requests > 0:
+                self.input_requests -= 1
+            raise
 
     def _output_babel_command_locked(self, command_name: str, target_word: str, missing_chars: list[str]):
         nodes = [
@@ -639,32 +698,77 @@ class BabelContext(CommonContext):
                 logger.info("[Babel] Goal condition met! Sent CLIENT_GOAL status update.")
 
     async def connect_babel(self):
-        url = self.server_address
-        if url and not (url.startswith("ws://") or url.startswith("wss://")):
-            url = f"ws://{url}"
-
-        ssl_context = None
-        if url.startswith("wss://"):
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+        force_wss = False
 
         while True:
             try:
                 self.babel_initialized = False
-                async with websockets.connect(url, ssl=ssl_context) as ws:
+
+                # If the main client is currently prompting for the room password, wait for it
+                # so the background Babel connection can automatically inherit self.password.
+                while (
+                    self.input_requests > 0
+                    and not self.babel_password
+                    and (not self.password or self.password == "None")
+                ):
+                    await asyncio.sleep(0.1)
+
+                if not self.babel_password and self.password and self.password != "None":
+                    self.babel_password = self.password
+
+                url = self.server_address
+                if not url:
+                    await asyncio.sleep(1)
+                    continue
+
+                url = f"ws://{url}" if "://" not in url else url.replace("archipelago://", "ws://")
+                if force_wss and url.startswith("ws://"):
+                    url = "wss://" + url[len("ws://"):]
+
+                parsed = urllib.parse.urlparse(url)
+                scheme = parsed.scheme or "ws"
+                host_part = parsed.netloc.rsplit("@", 1)[-1]
+                port = parsed.port or 38281
+                if not parsed.port:
+                    host_part = f"{host_part}:{port}"
+                clean_url = f"{scheme}://{host_part}"
+
+                ssl_context = None
+                if clean_url.startswith("wss://"):
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+
+                async with websockets.connect(
+                    clean_url,
+                    ssl=ssl_context,
+                    ping_timeout=None,
+                    ping_interval=None,
+                    max_size=self.max_size,
+                ) as ws:
                     self.babel_ws = ws
-                    connect_package = [{
-                        "cmd": "Connect",
-                        "password": self.babel_password,
-                        "name": self.babel_slot,
-                        "version": {"major": 0, "minor": 6, "build": 7, "class": "Version"},
-                        "tags": ["AP"],  # <--- PROMOTED TO A FULL GAME CLIENT!
-                        "items_handling": 7,
-                        "game": game_name,
-                        "uuid": str(uuid.uuid4())
-                    }]
-                    await ws.send(json.dumps(connect_package))
+
+                    def build_connect_package(pw: str) -> list[dict[str, Any]]:
+                        return [{
+                            "cmd": "Connect",
+                            "password": pw,
+                            "name": self.babel_slot,
+                            "version": {
+                                "major": Utils.version_tuple.major,
+                                "minor": Utils.version_tuple.minor,
+                                "build": Utils.version_tuple.build,
+                                "class": "Version",
+                            },
+                            "tags": ["AP"],  # <--- PROMOTED TO A FULL GAME CLIENT!
+                            "items_handling": 7,
+                            "game": game_name,
+                            "uuid": str(uuid.uuid4()),
+                        }]
+
+                    current_pw = self.babel_password or (
+                        self.password if self.password and self.password != "None" else ""
+                    )
+                    await ws.send(json.dumps(build_connect_package(current_pw)))
                     
                     async for message in ws:
                         packages = json.loads(message)
@@ -777,11 +881,47 @@ class BabelContext(CommonContext):
                                 if hasattr(self, "ui") and self.ui and hasattr(self.ui, "update_hints"):
                                     self.ui.update_hints()
                             elif cmd == "ConnectionRefused":
-                                logger.error(f"[Babel] Connection refused: {', '.join(package.get('errors', []))}")
+                                errors = package.get("errors", [])
+                                if "InvalidPassword" in errors:
+                                    main_pw = self.password if (self.password and self.password != "None") else ""
+                                    if main_pw and main_pw != current_pw:
+                                        current_pw = main_pw
+                                        self.babel_password = main_pw
+                                        await ws.send(json.dumps(build_connect_package(current_pw)))
+                                        continue
+
+                                    if self.input_requests > 0:
+                                        while self.input_requests > 0:
+                                            await asyncio.sleep(0.1)
+                                        main_pw = self.password if (self.password and self.password != "None") else ""
+                                        if main_pw and main_pw != current_pw:
+                                            current_pw = main_pw
+                                            self.babel_password = main_pw
+                                            await ws.send(json.dumps(build_connect_package(current_pw)))
+                                            continue
+
+                                    logger.error("[Babel] Invalid password for Babel slot.")
+                                    logger.info("Enter the password required to join this game (for Babel slot):")
+                                    entered_pw = await self._babel_console_input()
+                                    if entered_pw is not None:
+                                        current_pw = entered_pw
+                                        self.babel_password = entered_pw
+                                        if not self.password or self.password == "None":
+                                            self.password = entered_pw
+                                        await ws.send(json.dumps(build_connect_package(current_pw)))
+                                        continue
+
+                                logger.error(f"[Babel] Connection refused: {', '.join(errors)}")
                                 return
                                 
             except asyncio.CancelledError:
                 break
+            except websockets.InvalidMessage:
+                if not force_wss:
+                    force_wss = True
+                    continue
+                logger.warning("[Babel] Connection failed due to InvalidMessage. Reconnecting...")
+                await asyncio.sleep(5)
             except Exception as e:
                 logger.warning(f"[Babel] Connection dropped. Reconnecting... ({e})")
                 await asyncio.sleep(5)
@@ -1426,6 +1566,16 @@ class BabelContext(CommonContext):
                             size=(goal_tick_w, goal_tick_h),
                         )
                     )
+
+            def on_message(self, textinput):
+                input_text = textinput.text.strip()
+                if self.ctx.input_requests > 0 and input_text.startswith("/"):
+                    textinput.text = ""
+                    textinput.update_history(input_text)
+                    self.ctx.on_ui_command(input_text)
+                    self.commandprocessor(input_text)
+                    return
+                super().on_message(textinput)
 
             def update_texts(self, dt):
                 super().update_texts(dt)
