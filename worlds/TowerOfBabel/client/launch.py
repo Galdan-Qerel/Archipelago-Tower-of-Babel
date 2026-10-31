@@ -35,6 +35,9 @@ SYMBOLS_LIST = sorted(
 )
 SYMBOLS_CHARS = set(SYMBOLS_LIST)
 
+HINT_CMD_CHARS = ("!", "H", "I", "N", "T")
+RELEASE_CMD_CHARS = ("!", "R", "E", "L", "E", "A", "S", "E")
+
 
 logger = logging.getLogger("Client")
 
@@ -404,6 +407,41 @@ class BabelContext(CommonContext):
             await super().server_auth(password_requested)
         await self.get_username()
         await self.send_connect()
+
+    def _output_babel_command_locked(self, command_name: str, target_word: str, missing_chars: list[str]):
+        nodes = [
+            {"text": "[Babel] ", "color": "green"},
+            {"text": f"Command Locked! You cannot use {command_name} until all characters in '", "color": "red"},
+            {"text": target_word, "color": "yellow"},
+            {"text": f"' are unlocked (Missing: {', '.join(missing_chars)}).", "color": "red"},
+        ]
+        self.on_print_json({
+            "cmd": "PrintJSON",
+            "data": nodes,
+            "type": "BabelUnlock",
+        })
+
+    def on_user_say(self, text: str) -> str | None:
+        if text:
+            stripped = text.strip()
+            first_token = stripped.split(None, 1)[0].lower() if stripped else ""
+            if first_token in ("!hint", "!hint_location"):
+                missing = []
+                for ch in HINT_CMD_CHARS:
+                    if self.normalize_char(ch) not in self.unlocked_chars and ch not in missing:
+                        missing.append(ch)
+                if missing:
+                    self._output_babel_command_locked(first_token, "!HINT", missing)
+                    return None
+            elif first_token == "!release":
+                missing = []
+                for ch in RELEASE_CMD_CHARS:
+                    if self.normalize_char(ch) not in self.unlocked_chars and ch not in missing:
+                        missing.append(ch)
+                if missing:
+                    self._output_babel_command_locked("!release", "!RELEASE", missing)
+                    return None
+        return super().on_user_say(text)
 
     def _output_babel_unlock(self, char_norm: str):
         nodes = [
@@ -816,8 +854,9 @@ class BabelContext(CommonContext):
                 self._last_hand_state = None
                 self._hand_row_widgets: dict[str, dict[str, Any]] = {}
                 self._last_symbols_state = None
-                self._symbol_cell_widgets: dict[str, tuple[MDBoxLayout, MDLabel]] = {}
+                self._symbol_cell_widgets: dict[str, tuple[MDBoxLayout, MDLabel, str]] = {}
                 self._symbol_section_headers: dict[str, MDLabel] = {}
+                self._cmd_tracker_widgets: dict[str, dict[str, Any]] = {}
                 self._last_milestone_bar_state = None
 
                 self.babel_status_row = MDBoxLayout(
@@ -999,6 +1038,88 @@ class BabelContext(CommonContext):
                 self.symbols_scroll.add_widget(self.symbols_sections_container)
                 self.symbols_tab_layout.add_widget(self.symbols_scroll)
 
+                # Bottom Tracker for !hint and !release commands
+                self.symbols_tab_layout.add_widget(MDDivider(size_hint_y=None, height=dp(1)))
+                self.cmd_tracker_container = MDBoxLayout(
+                    orientation="vertical",
+                    size_hint_y=None,
+                    height=dp(110),
+                    spacing=dp(6),
+                    padding=(dp(6), dp(4)),
+                )
+                self.cmd_tracker_header = MDLabel(
+                    text=(
+                        "[b]Command Unlocks[/b] — Collect all characters (including [b]![/b]) "
+                        "to unlock server commands:"
+                    ),
+                    size_hint_y=None,
+                    height=dp(22),
+                    font_size=sp(13),
+                    markup=True,
+                    valign="center",
+                )
+                self.cmd_tracker_container.add_widget(self.cmd_tracker_header)
+
+                for cmd_key, cmd_label_text, cmd_chars in (
+                    ("hint", "!hint", HINT_CMD_CHARS),
+                    ("release", "!release", RELEASE_CMD_CHARS),
+                ):
+                    cmd_row = MDBoxLayout(
+                        orientation="horizontal",
+                        size_hint_y=None,
+                        height=dp(36),
+                        spacing=dp(8),
+                    )
+                    status_lbl = MDLabel(
+                        text=f"[b]{cmd_label_text}[/b] — [color=ff6b6b]LOCKED[/color]",
+                        size_hint_x=None,
+                        width=dp(220),
+                        font_size=sp(13),
+                        markup=True,
+                        valign="center",
+                    )
+                    cmd_row.add_widget(status_lbl)
+
+                    tiles_row = MDBoxLayout(
+                        orientation="horizontal",
+                        size_hint_y=None,
+                        height=dp(34),
+                        spacing=dp(6),
+                    )
+                    tile_list = []
+                    for ch in cmd_chars:
+                        norm_ch = self.ctx.normalize_char(ch)
+                        escaped_ch = escape_markup(ch)
+                        tile_box = MDBoxLayout(
+                            orientation="vertical",
+                            size_hint=(None, None),
+                            size=(dp(34), dp(34)),
+                            padding=(dp(2), dp(2)),
+                            radius=[dp(5), dp(5), dp(5), dp(5)],
+                            theme_bg_color="Custom",
+                            md_bg_color=(0.14, 0.15, 0.18, 1),
+                        )
+                        tile_lbl = MDLabel(
+                            text=f"[color=505662]{escaped_ch}[/color]",
+                            markup=True,
+                            halign="center",
+                            valign="center",
+                            font_size=sp(15),
+                        )
+                        tile_box.add_widget(tile_lbl)
+                        tiles_row.add_widget(tile_box)
+                        tile_list.append((norm_ch, tile_box, tile_lbl, escaped_ch))
+
+                    cmd_row.add_widget(tiles_row)
+                    self.cmd_tracker_container.add_widget(cmd_row)
+                    self._cmd_tracker_widgets[cmd_key] = {
+                        "label_text": cmd_label_text,
+                        "status_label": status_lbl,
+                        "tiles": tile_list,
+                    }
+
+                self.symbols_tab_layout.add_widget(self.cmd_tracker_container)
+
                 self.symbols_tab = self.add_client_tab("Symbols Unlocked", self.symbols_tab_layout)
                 self.log_panels["Symbols Unlocked"] = self.symbols_tab.content
 
@@ -1172,6 +1293,32 @@ class BabelContext(CommonContext):
                         # Dull muted appearance for locked characters
                         cell_box.md_bg_color = (0.14, 0.15, 0.18, 1)
                         cell_lbl.text = f"[color=505662]{escaped_ch}[/color]"
+
+                for cmd_key, tracker_info in self._cmd_tracker_widgets.items():
+                    cmd_label_text = tracker_info["label_text"]
+                    status_lbl = tracker_info["status_label"]
+                    tiles = tracker_info["tiles"]
+                    unlocked_count = 0
+                    for norm_ch, tile_box, tile_lbl, escaped_ch in tiles:
+                        if norm_ch in unlocked_snapshot:
+                            unlocked_count += 1
+                            tile_box.md_bg_color = (0.28, 0.10, 0.36, 1)
+                            tile_lbl.text = f"[b][color=ff55ff]{escaped_ch}[/color][/b]"
+                        else:
+                            tile_box.md_bg_color = (0.14, 0.15, 0.18, 1)
+                            tile_lbl.text = f"[color=505662]{escaped_ch}[/color]"
+
+                    total_tiles = len(tiles)
+                    if unlocked_count == total_tiles:
+                        status_lbl.text = (
+                            f"[b]{cmd_label_text}[/b]  —  "
+                            f"[b][color=00ff88]UNLOCKED ({unlocked_count}/{total_tiles})[/color][/b]"
+                        )
+                    else:
+                        status_lbl.text = (
+                            f"[b]{cmd_label_text}[/b]  —  "
+                            f"[color=ff6b6b]LOCKED ({unlocked_count}/{total_tiles})[/color]"
+                        )
 
             def _refresh_milestone_markers(self, force: bool = False):
                 from kivy.graphics import Color, Rectangle
